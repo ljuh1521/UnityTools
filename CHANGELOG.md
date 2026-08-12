@@ -1,5 +1,13 @@
 # 변경 기록
 
+## 0.1.1
+
+- `call`이 오버로드 있는 메서드에서 `AmbiguousMatchException`으로 죽던 것을 고쳤다.
+  이름으로 다 모은 뒤 부를 수 있는 모양(무인자 / 문자열 하나)만 고른다.
+  `UnityEditor.PackageManager.Client.Resolve` 처럼 UnityEditor 쪽에 오버로드가 흔하다.
+- `status.txt`를 바쁜 상태 검사보다 먼저 쓴다. 뒤에 쓰면 컴파일·임포트가 길어질 때
+  갱신이 멈춰 밖에서는 브릿지가 죽은 것처럼 보인다.
+
 ## 0.1.0
 
 DefenceR에서 스택 무관한 에디터 도구를 뽑아 첫 패키지로 만들었다.

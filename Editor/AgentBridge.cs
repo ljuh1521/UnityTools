@@ -335,30 +335,49 @@ namespace UnityTools.Editor
 
             var type = FindType(typeName);
 
-            var method = type?.GetMethod(methodName,
-                BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+            if (type == null)
+            {
+                report.AppendLine($"!! 타입을 찾지 못했습니다: {typeName}");
+                return;
+            }
 
-            if (method == null)
+            // GetMethod(이름, 플래그)는 오버로드가 있으면 예외를 던진다(UnityEditor 쪽에 흔하다).
+            // 이름으로 다 모은 뒤 부를 수 있는 모양만 고른다.
+            MethodInfo noArgument = null;
+            MethodInfo stringArgument = null;
+            bool anyByName = false;
+
+            foreach (var candidate in type.GetMethods(
+                BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static))
+            {
+                if (candidate.Name != methodName) continue;
+
+                anyByName = true;
+
+                var signature = candidate.GetParameters();
+
+                if (signature.Length == 0) noArgument ??= candidate;
+                else if (signature.Length == 1 && signature[0].ParameterType == typeof(string))
+                    stringArgument ??= candidate;
+            }
+
+            if (!anyByName)
             {
                 report.AppendLine($"!! 찾지 못했습니다: {target}");
                 return;
             }
 
-            var parameters = method.GetParameters();
+            var method = argument != null ? stringArgument ?? noArgument : noArgument;
 
-            if (parameters.Length > 1 || (parameters.Length == 1 && parameters[0].ParameterType != typeof(string)))
+            if (method == null)
             {
-                report.AppendLine($"!! 무인자이거나 문자열 하나를 받는 메서드만 부를 수 있습니다: {target}");
+                report.AppendLine(argument != null
+                    ? $"!! 인자를 받는 판이 없습니다: {target}"
+                    : $"!! 인자가 필요합니다: {target} <문자열>");
                 return;
             }
 
-            if (parameters.Length == 1 && argument == null)
-            {
-                report.AppendLine($"!! 인자가 필요합니다: {target} <문자열>");
-                return;
-            }
-
-            method.Invoke(null, parameters.Length == 1 ? new object[] { argument } : null);
+            method.Invoke(null, method.GetParameters().Length == 1 ? new object[] { argument } : null);
         }
 
         /// <summary>
