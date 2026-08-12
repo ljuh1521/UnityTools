@@ -1,0 +1,28 @@
+{
+    "name": "UnityTools.Editor.Spine",
+    "rootNamespace": "UnityTools.Editor",
+    "references": [
+        "UnityTools.Editor",
+        "spine-unity",
+        "spine-csharp"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [
+        "SPINE_UNITY_PRESENT"
+    ],
+    "versionDefines": [
+        {
+            "name": "com.esotericsoftware.spine.spine-unity",
+            "expression": "",
+            "define": "SPINE_UNITY_PRESENT"
+        }
+    ],
+    "noEngineReferences": false
+}
