@@ -85,10 +85,74 @@ PrefabPreviewCapture.ReferenceResolution = new Vector2(1080, 1920);
 PrefabPreviewCapture.PreRender.Add(instance => { ... });
 ```
 
+### 프리팹 지킴이 — `PrefabKeeper`
+
+생성기가 프리팹을 매번 새로 조립해 덮어쓰면, 인스펙터에서 손본 위치·색이 다음 생성에 사라진다.
+그러면 사람이 손댈 수 없는 물건이 된다. **세 벌을 비교해** 손질만 이어받는다.
+
+    기준선(지난번 생성값) ─ 지금 프리팹 값 ─ 이번 생성값
+
+지금 값이 기준선과 다르면 사람이 고친 것이라 지키고, 같으면 이번 생성값을 쓴다.
+사람이 **직접 추가한 오브젝트**도 함께 옮겨 온다.
+
+생성기의 저장 부분을 이렇게 감싼다:
+
+```csharp
+var generated = PrefabKeeper.Capture(root);      // 이번 생성값
+
+// 기준선이 없으면 false — 저장하지 말고 멈춘다.
+if (!PrefabKeeper.TryRestore(root, path, generated))
+{
+    Object.DestroyImmediate(root);
+    return;
+}
+
+var saving = PrefabKeeper.Capture(root);         // 저장 직전 값
+PrefabUtility.SaveAsPrefabAsset(root, path);
+Object.DestroyImmediate(root);
+
+PrefabKeeper.WriteBaseline(path, generated, saving);
+```
+
+**이미 있는 프리팹인데 기준선이 없으면 만들지 않고 멈춘다.** 그 상태에서는 무엇이 손질인지 가릴 수가
+없어, 저장하는 순간 다듬은 값이 조용히 사라진다(예전에는 경고만 내고 덮어썼다 — 실제로 팝업 두 개를
+그렇게 날렸다). 지금 프리팹을 버리고 새로 만들 생각이면 **그 프리팹을 지우고** 다시 돌린다.
+
+기준선은 `PrefabKeeper.Root`(기본 `ProjectSettings/PrefabBaseline`) 아래 텍스트로 남는다 —
+에셋이 아니라 `.meta`가 안 생긴다. **이미 기준선이 쌓인 프로젝트는 그 경로를 그대로 넣는다.**
+
+`WriteBaseline`은 저장 전후로 값이 달라지는 속성을 찾아 경고한다. 레이아웃이 계산하는 자리·크기처럼
+사람이 정한 값이 아닌 것을 추적하면 다음 생성에서 전부 "손질"로 오인하기 때문이다
+(실제로 21개를 잘못 붙잡은 적이 있다). 경고가 나오면 추적 목록(`Fields`)에서 뺀다.
+
+### 텍스처 프리셋 — `TexturePresetTools`
+
+```csharp
+TexturePresetTools.ApplyToFolder("Assets/Presets/TexturePreset.preset", "Assets/Textures", "텍스처");
+TexturePresetTools.FixSpineMaterials("Assets/Sources/Spine");
+```
+
+프리셋은 임포터의 **모든** 값을 덮어쓴다. 그래서 스프라이트 시트로 잘라 둔 조각, 9슬라이스 테두리,
+피벗, PPU는 되돌릴 수 없게 날아간다 — 그런 텍스처는 건너뛰고 목록으로 알린다.
+메뉴는 폴더·프리셋 경로를 아는 프로젝트 쪽에 둔다.
+
+### 검사 모음 — `Tools/유니티 툴즈/검사`
+
+검사 메서드에 속성만 붙이면 한 메뉴에서 전부 돌아간다. 인자 없는 정적 메서드여야 한다.
+
+```csharp
+[EditorValidator("UI 프리팹 검사", 10)]
+public static void Validate() { ... }
+```
+
+검사마다 메뉴를 두면 "어느 걸 돌리지"가 되어 결국 아무도 안 돌린다. 하나가 예외로 죽어도
+나머지는 계속 돌린다 — 첫 검사가 막힌 동안 뒤가 잠들면 안 된다.
+
 ## 선택 의존
 
-`Editor/Spine/`은 `spine-unity` 패키지가 있을 때만 컴파일된다(asmdef `versionDefines` + `defineConstraints`).
-없는 프로젝트에서는 어셈블리째 빠지므로 코어는 스파인을 몰라도 된다. 다른 선택 의존도 같은 방식으로 더한다.
+`Editor/Spine/`은 `spine-unity`가, `Editor/UI/`는 `com.unity.ugui`가 있을 때만 컴파일된다
+(asmdef `versionDefines` + `defineConstraints`). 없는 프로젝트에서는 어셈블리째 빠지므로
+코어는 그것들을 몰라도 된다. 다른 선택 의존도 같은 방식으로 더한다.
 
 ## 넣을 것과 안 넣을 것
 
