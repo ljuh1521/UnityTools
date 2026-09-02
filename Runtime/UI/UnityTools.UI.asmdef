@@ -1,0 +1,22 @@
+{
+    "name": "UnityTools.UI",
+    "rootNamespace": "UnityTools.UI",
+    "references": [],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [
+        "UGUI_PRESENT"
+    ],
+    "versionDefines": [
+        {
+            "name": "com.unity.ugui",
+            "expression": "",
+            "define": "UGUI_PRESENT"
+        }
+    ],
+    "noEngineReferences": false
+}

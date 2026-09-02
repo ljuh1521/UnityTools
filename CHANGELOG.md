@@ -1,5 +1,18 @@
 # 변경 기록
 
+## 0.4.0
+
+- **Runtime 모듈 신규**(`Runtime/UI/`) — 지금까지는 `Editor/`뿐이었는데, 처음으로 런타임(빌드에도
+  들어가는) 코드를 넣었다. `com.unity.ugui`가 있을 때만 컴파일(Editor/UI/와 같은 조건).
+- **UI/Outline 셰이더 + `OutlineWidthModifier`** — 사각형이 아닌 실루엣(별·아치 모양 등)에도
+  두께가 고른 UI 테두리. 원본 알파의 가장자리를 따라 링을 그리는 방식이라, 흔한 "같은 스프라이트를
+  뒤에 깔고 사각형 틀 안쪽으로 밀어넣는" 기존 기법이 실루엣이 사각형이 아닐 때 두께가 고르지
+  않아지는 문제를 해결한다. 9슬라이스(보더) 스프라이트도 지원. DefenceR에서 만든 뒤 프로젝트
+  비의존이라 옮겼다(GUID 보존— DefenceR 쪽 참조는 안 깨짐).
+- **`PrefabInstanceInfo` 진단 명령**(`Editor/`) — 지금 만지는 오브젝트가 중첩 프리팹 인스턴스인지,
+  원본이 어디인지 알려준다. 인스턴스만 고치고 원본을 빠뜨리는 실수(DefenceR에서 실제로 한 번
+  발생)를 줄이려고 추가. `call UnityTools.Editor.PrefabInstanceInfo.Dump <프리팹 경로>|<안쪽 경로>`.
+
 ## 0.3.0
 
 - **프리팹 지킴이 — 기준선이 없으면 덮어쓰지 않고 멈춘다.** `Restore`(void)를 `TryRestore`(bool)로
