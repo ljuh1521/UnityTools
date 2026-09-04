@@ -91,6 +91,9 @@ Shader "UI/Outline"
                 float4 borderFrac : TEXCOORD2;
                 // xyzw = 보더 두께(원본 스프라이트 크기 대비 비율) left/bottom/right/top.
                 float4 borderUV : TEXCOORD3;
+                // xy=아틀라스 안에서 이 스프라이트의 UV 시작점, zw=UV 크기. 단일 스프라이트면
+                // (0,0,1,1) — uv0~3 채널이 이미 꽉 차 TANGENT에 얹어 받는다(라이팅용 아님).
+                float4 spriteUVRect : TANGENT;
                 UNITY_VERTEX_INPUT_INSTANCE_ID
             };
 
@@ -104,6 +107,7 @@ Shader "UI/Outline"
                 float4 borderFrac    : TEXCOORD3;
                 float4 borderUV      : TEXCOORD4;
                 float4 worldPosition : TEXCOORD5;
+                float4 spriteUVRect  : TEXCOORD6;
                 UNITY_VERTEX_OUTPUT_STEREO
             };
 
@@ -125,6 +129,7 @@ Shader "UI/Outline"
                 OUT.quadScale = v.packed1.zw;
                 OUT.borderFrac = v.borderFrac;
                 OUT.borderUV = v.borderUV;
+                OUT.spriteUVRect = v.spriteUVRect;
 
                 #ifdef UNITY_HALF_TEXEL_OFFSET
                 OUT.vertex.xy += (_ScreenParams.zw - 1.0) * float2(-1, 1);
@@ -151,23 +156,33 @@ Shader "UI/Outline"
             // core 밖(0..1 벗어남)이면 "그림 없음"으로 친다 — Outline 쿼드가 원본보다 커진 만큼
             // 생긴 바깥 여백은 실제 텍스처에 대응하는 픽셀이 없기 때문에, 텍스처 Clamp로
             // 가장자리 픽셀을 늘리는 대신 명시적으로 투명 처리한다.
-            half SampleCoreAlpha(float2 coreFrac, float4 borderFrac, float4 borderUV)
+            // uv는 스프라이트 로컬 기준(0..1, 보더 매핑 이미 적용됨) — 이걸 아틀라스 안 실제
+            // 위치로 다시 옮겨야 진짜 텍스처를 올바로 샘플링한다(spriteUVRect, 단일 스프라이트면
+            // (0,0,1,1)이라 그대로 통과).
+            half SampleCoreAlpha(float2 coreFrac, float4 borderFrac, float4 borderUV, float4 spriteUVRect)
             {
                 if (coreFrac.x < 0 || coreFrac.x > 1 || coreFrac.y < 0 || coreFrac.y > 1) return 0;
 
                 float2 uv;
                 uv.x = MapAxis(coreFrac.x, borderFrac.x, borderFrac.z, borderUV.x, 1 - borderUV.z);
                 uv.y = MapAxis(coreFrac.y, borderFrac.y, borderFrac.w, borderUV.y, 1 - borderUV.w);
-                return tex2D(_MainTex, uv).a + _TextureSampleAdd.a;
+
+                float2 atlasUV = spriteUVRect.xy + uv * spriteUVRect.zw;
+                return tex2D(_MainTex, atlasUV).a + _TextureSampleAdd.a;
             }
 
             fixed4 frag(v2f IN) : SV_Target
             {
+                // IN.texcoord는 Unity의 기본 UI 메쉬가 이미 아틀라스 안 실제 위치로 채워준 값이라
+                // (스프라이트가 아틀라스 조각이면 0..1이 아니다) — 아래 core 계산은 스프라이트
+                // 로컬(0..1) 기준이어야 하므로 먼저 spriteUVRect로 로컬 좌표로 되돌린다.
+                float2 localTexcoord = (IN.texcoord - IN.spriteUVRect.xy) / IN.spriteUVRect.zw;
+
                 // 커진 Outline 쿼드의 UV(0..1)를 core(Image와 같은 크기) 기준 위치로 되돌린다 —
                 // 쿼드 중심은 그대로, 가장자리로 갈수록 core 범위(0..1) 밖으로 벌어진다.
-                float2 coreFrac = (IN.texcoord - 0.5) * IN.quadScale + 0.5;
+                float2 coreFrac = (localTexcoord - 0.5) * IN.quadScale + 0.5;
 
-                half srcAlpha = SampleCoreAlpha(coreFrac, IN.borderFrac, IN.borderUV);
+                half srcAlpha = SampleCoreAlpha(coreFrac, IN.borderFrac, IN.borderUV, IN.spriteUVRect);
                 half ringAlpha = 0;
                 half maxAlpha = srcAlpha;
 
@@ -180,7 +195,7 @@ Shader "UI/Outline"
                     {
                         float angle = i * (OUTLINE_TWO_PI / OUTLINE_SAMPLES);
                         float2 offset = float2(cos(angle) * IN.outlineWidth.x, sin(angle) * IN.outlineWidth.y);
-                        maxAlpha = max(maxAlpha, SampleCoreAlpha(coreFrac + offset, IN.borderFrac, IN.borderUV));
+                        maxAlpha = max(maxAlpha, SampleCoreAlpha(coreFrac + offset, IN.borderFrac, IN.borderUV, IN.spriteUVRect));
                     }
 
                     // 원본이 있는 자리(srcAlpha>0)는 위에 그려질 Image 레이어가 실제 그림으로
