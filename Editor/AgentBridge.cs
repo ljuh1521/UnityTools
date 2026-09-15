@@ -27,7 +27,10 @@ namespace UnityTools.Editor
     ///   Logs/Agent/status.txt    살아 있는지 알리는 시각(켜져 있을 때만 갱신).
     ///
     /// 명령:
-    ///   refresh              에셋 다시 읽기(코드를 고쳤으면 이걸로 컴파일시킨다)
+    ///   refresh              에셋 다시 읽기(코드를 고쳤으면 이걸로 컴파일시킨다).
+    ///                        컴파일이 실제로 걸렸는지 다음 줄에 보고한다.
+    ///   recompile            변경 감지를 건너뛰고 컴파일을 직접 요청한다(느리다).
+    ///                        refresh가 "컴파일이 안 걸렸습니다"라고 했는데 고친 게 분명할 때 쓴다.
     ///   menu &lt;메뉴 경로&gt;      메뉴 항목 실행
     ///   call &lt;네임스페이스.타입.메서드&gt; [문자열]  메뉴에 없는 생성기·검사를 직접 호출(정적)
     ///   capture &lt;에셋 경로&gt;   프리팹을 렌더해 Logs/UIPreview에 저장
@@ -43,6 +46,19 @@ namespace UnityTools.Editor
         private const string EnabledKey = "UnityTools.AgentBridge.Enabled";
         private const string PendingKey = "UnityTools.AgentBridge.Pending";
         private const string WaitKey = "UnityTools.AgentBridge.WaitUntil";
+
+        // refresh·recompile이 컴파일을 실제로 걸었는지 세는 자리. 도메인 리로드를 넘겨야 해서 EditorPrefs에 둔다.
+        private const string WatchKey = "UnityTools.AgentBridge.WatchCompile";
+        private const string CompiledKey = "UnityTools.AgentBridge.CompiledCount";
+        private const string SeenKey = "UnityTools.AgentBridge.CompileSeen";
+        private const string DeadlineKey = "UnityTools.AgentBridge.CompileDeadline";
+
+        // 컴파일을 부탁한 뒤 유니티가 실제로 시작하기까지 걸리는 시간을 봐 준다. 이만큼은 "안 걸렸다"고
+        // 판정하지 않는다 — 시작 전에 판정하면 멀쩡히 도는 컴파일을 무동작으로 잘못 보고한다.
+        private const double RefreshGrace = 2;
+
+        // recompile은 요청을 큐에 넣고 나중 틱에서 처리하므로 더 길게 본다.
+        private const double RecompileGrace = 15;
 
         private const string Root = "Logs/Agent";
         private const string RequestFile = Root + "/request.txt";
@@ -65,6 +81,7 @@ namespace UnityTools.Editor
         {
             EditorApplication.update += Poll;
             CompilationPipeline.assemblyCompilationFinished += OnAssemblyCompiled;
+            CompilationPipeline.compilationStarted += OnCompilationStarted;
         }
 
         /// <summary>
@@ -97,6 +114,45 @@ namespace UnityTools.Editor
             get => double.TryParse(EditorPrefs.GetString(WaitKey, "0"),
                 NumberStyles.Float, CultureInfo.InvariantCulture, out double value) ? value : 0;
             set => EditorPrefs.SetString(WaitKey, value.ToString(CultureInfo.InvariantCulture));
+        }
+
+        /// <summary>
+        /// 컴파일을 걸어 달라고 부탁한 뒤 결과를 보고해야 하는 상태인가.
+        /// <c>refresh</c>·<c>recompile</c>이 켜고, 보고하면서 끈다.
+        /// </summary>
+        private static bool WatchingCompile
+        {
+            get => EditorPrefs.GetBool(WatchKey, false);
+            set => EditorPrefs.SetBool(WatchKey, value);
+        }
+
+        /// <summary>지켜보기 시작한 뒤 실제로 다시 만들어진 어셈블리 수.</summary>
+        private static int CompiledCount
+        {
+            get => EditorPrefs.GetInt(CompiledKey, 0);
+            set => EditorPrefs.SetInt(CompiledKey, value);
+        }
+
+        /// <summary>
+        /// 컴파일이 실제로 돌았는가. <b>판정은 이 값으로 한다</b> — 어셈블리 개수로 하면 안 된다.
+        ///
+        /// 어셈블리별 완료 이벤트(<c>assemblyCompilationFinished</c>)는 유니티가 빌드 캐시로 결과를
+        /// 채울 때 안 뜬다. 2026-09-15 DefenceR 실측: Csc가 203개 돌고 어셈블리를 다시 로드했는데도
+        /// 개수가 0이었다(로그에는 compile time=2 ms, CacheWrite 다수). 그래서 "돌았는가"는
+        /// 전체 컴파일 시작 이벤트와 폴링 중 관측으로 따로 잡는다.
+        /// </summary>
+        private static bool CompileSeen
+        {
+            get => EditorPrefs.GetBool(SeenKey, false);
+            set => EditorPrefs.SetBool(SeenKey, value);
+        }
+
+        /// <summary>이 시각까지는 "컴파일이 안 걸렸다"고 판정하지 않는다.</summary>
+        private static double CompileDeadline
+        {
+            get => double.TryParse(EditorPrefs.GetString(DeadlineKey, "0"),
+                NumberStyles.Float, CultureInfo.InvariantCulture, out double value) ? value : 0;
+            set => EditorPrefs.SetString(DeadlineKey, value.ToString(CultureInfo.InvariantCulture));
         }
 
         private const string ToggleMenu = UnityToolsMenu.Root + "에이전트 브릿지";
@@ -139,11 +195,25 @@ namespace UnityTools.Editor
             WriteStatus();
 
             // 컴파일·임포트·플레이 전환 중에는 명령을 돌리면 안 된다. 끝나면 다음 차례에 이어서 한다.
-            if (EditorApplication.isCompiling || EditorApplication.isUpdating) return;
+            // 지나는 길에 컴파일을 봤다는 사실을 남긴다 — 이벤트가 캐시 경로에서 안 뜨는 경우의 보루다.
+            if (EditorApplication.isCompiling)
+            {
+                if (WatchingCompile) CompileSeen = true;
+
+                return;
+            }
+
+            if (EditorApplication.isUpdating) return;
             if (EditorApplication.isPlayingOrWillChangePlaymode != EditorApplication.isPlaying) return;
 
             // 기다리는 중이면 아직 손대지 않는다.
             if (EditorApplication.timeSinceStartup < WaitUntil) return;
+
+            // 컴파일을 부탁해 놓고 아직 시작도 안 했으면 판정을 미룬다. 여기서 안 기다리면 요청 직후
+            // 0.5초 만에 "안 걸렸습니다"가 나가서, 곧 시작될 컴파일을 무동작으로 잘못 보고한다
+            // (2026-09-15 DefenceR 실측: recompile이 그렇게 두 번 무동작으로 보고됐다).
+            if (WatchingCompile && !CompileSeen &&
+                EditorApplication.timeSinceStartup < CompileDeadline) return;
 
             string commands = Pending;
             bool continued = !string.IsNullOrEmpty(commands);
@@ -168,6 +238,8 @@ namespace UnityTools.Editor
             var report = new StringBuilder();
 
             report.AppendLine(append ? "# 이어서 " + Stamp() : "# 실행 " + Stamp());
+
+            if (append) ReportCompile(report);
 
             Captured.Clear();
             _collecting = true;
@@ -233,7 +305,39 @@ namespace UnityTools.Editor
                         return true;
                     }
 
+                    WatchCompile(RefreshGrace);
                     AssetDatabase.Refresh();
+                    return true;
+
+                case "recompile":
+                    // refresh는 유니티가 "바뀐 파일"을 스스로 찾아야 도는데, 밖에서 고친 .cs를 놓칠 때가 있다.
+                    // 이건 refresh가 "컴파일 안 걸렸다"고 보고했는데 고친 게 분명할 때 쓰는 탈출구다.
+                    //
+                    // CleanBuildCache를 쓰는 이유는 "캐시된 빌드 결과를 모두 지워 전체 스크립트를 다시
+                    // 빌드"가 문서상 보장이기 때문이다. 기본값(None)은 "바뀐 스크립트만"이라, 변경 감지가
+                    // 실패한 상황 — 정확히 이 명령을 쓰는 상황 — 에서 무엇을 하는지 보장이 없다.
+                    // 탈출구는 느려도 확실한 쪽이 맞다. 대신 전부 다시 만들어 수 분 걸린다.
+                    //
+                    // 주의: 컴파일이 돌았는지를 Library/ScriptAssemblies의 DLL 시각으로 재지 말 것.
+                    // 유니티(Bee)는 Library/Bee/artifacts에 만들고 내용이 달라졌을 때만 저기로 복사하므로,
+                    // 소스가 그대로면 다시 컴파일해도 시각이 안 변한다 — 2026-09-15에 그걸 근거로
+                    // "이 명령이 무동작"이라는 틀린 결론을 냈다(실제로는 두 번 다 돌고 있었다).
+                    if (EditorApplication.isPlaying)
+                    {
+                        report.AppendLine("   플레이 중이라 먼저 정지합니다.");
+
+                        EditorApplication.isPlaying = false;
+
+                        Pending = line + Environment.NewLine + Pending;
+
+                        return true;
+                    }
+
+                    report.AppendLine("   전체를 다시 만듭니다 — 프로젝트에 따라 수 분 걸립니다.");
+
+                    WatchCompile(RecompileGrace);
+                    AssetDatabase.Refresh();
+                    CompilationPipeline.RequestScriptCompilation(RequestScriptCompilationOptions.CleanBuildCache);
                     return true;
 
                 case "menu":
@@ -411,9 +515,63 @@ namespace UnityTools.Editor
             Captured.Add(head + condition);
         }
 
+        /// <summary>이제부터 컴파일이 도는지 지켜본다. 컴파일을 거는 명령이 부른다.</summary>
+        /// <param name="grace">유니티가 컴파일을 시작할 때까지 봐 줄 시간(초).</param>
+        private static void WatchCompile(double grace)
+        {
+            WatchingCompile = true;
+            CompiledCount = 0;
+            CompileSeen = false;
+            CompileDeadline = EditorApplication.timeSinceStartup + grace;
+        }
+
+        /// <summary>
+        /// 컴파일이 실제로 걸렸는지 보고한다.
+        ///
+        /// 이게 없으면 <c>refresh</c> 다음의 <c>call</c> 실패가 <b>오타인지 옛 어셈블리인지</b> 구분되지 않는다.
+        /// 둘 다 "찾지 못했습니다"로 똑같이 나오기 때문이다 — 실제로 그것 때문에 하루에 세 번 헛돌았다
+        /// (2026-09-15, DefenceR). 유니티가 밖에서 고친 .cs를 못 알아채는 일이 있어서 생기는 문제다.
+        /// </summary>
+        private static void ReportCompile(StringBuilder report)
+        {
+            if (!WatchingCompile) return;
+
+            int count = CompiledCount;
+            bool ran = CompileSeen;
+
+            WatchingCompile = false;
+            CompiledCount = 0;
+            CompileSeen = false;
+            CompileDeadline = 0;
+
+            if (ran)
+            {
+                // 개수는 알 수 있을 때만 붙인다 — 캐시로 채워지면 어셈블리별 이벤트가 안 떠서 0이다.
+                report.AppendLine(count > 0
+                    ? $"   컴파일 걸렸습니다 — 어셈블리 {count}개를 다시 만들었습니다."
+                    : "   컴파일 걸렸습니다.");
+                return;
+            }
+
+            report.AppendLine("   컴파일이 안 걸렸습니다 — 바뀐 스크립트를 찾지 못했습니다. " +
+                              "방금 고친 코드인데 call이 \"찾지 못했습니다\"로 나오면 오타가 아니라 " +
+                              "옛 어셈블리를 보고 있는 것이니 recompile을 넣으세요(전체를 다시 만들어 느립니다).");
+        }
+
+        private static void OnCompilationStarted(object context)
+        {
+            if (Enabled && WatchingCompile) CompileSeen = true;
+        }
+
         private static void OnAssemblyCompiled(string assembly, CompilerMessage[] messages)
         {
             if (!Enabled) return;
+
+            if (WatchingCompile)
+            {
+                CompiledCount++;
+                CompileSeen = true;
+            }
 
             var errors = new List<string>();
 
