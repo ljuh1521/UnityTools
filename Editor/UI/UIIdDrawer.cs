@@ -1,3 +1,4 @@
+using System;
 using UnityEditor;
 using UnityEngine;
 using UnityTools.UI;
@@ -28,7 +29,7 @@ namespace UnityTools.Editor
             var names = UIId.Names;
             var values = UIId.Values;
 
-            int current = 0;
+            int current = -1;
 
             for (int i = 0; i < values.Length; i++)
             {
@@ -36,6 +37,20 @@ namespace UnityTools.Editor
 
                 current = i;
                 break;
+            }
+
+            // 목록에 없는 값은 **숫자를 그대로 보여준다.** 예전엔 못 찾으면 0번(보통 None)을 고른
+            // 것처럼 그려서, enum에서 빠진 이름표를 물고 있는 프리팹이 "이름표 없음"으로 보였다 —
+            // 실제로는 그 값이 그대로 저장돼 있고 Collect도 그 id로 등록한다(2026-09-18 코드 검토).
+            if (current < 0)
+            {
+                var shown = new string[names.Length + 1];
+
+                Array.Copy(names, shown, names.Length);
+                shown[names.Length] = $"<목록에 없음: {property.intValue}>";
+
+                names = shown;
+                current = names.Length - 1;
             }
 
             EditorGUI.BeginChangeCheck();
@@ -49,7 +64,8 @@ namespace UnityTools.Editor
 
             EditorGUI.showMixedValue = mixed;
 
-            if (EditorGUI.EndChangeCheck()) property.intValue = values[picked];
+            // 마지막 자리는 "목록에 없음" 표시라 고를 게 없다 — 골라도 값을 안 바꾼다.
+            if (EditorGUI.EndChangeCheck() && picked < values.Length) property.intValue = values[picked];
 
             EditorGUI.EndProperty();
         }

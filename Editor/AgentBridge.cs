@@ -75,6 +75,16 @@ namespace UnityTools.Editor
         private static readonly List<string> Captured = new();
         private static bool _collecting;
 
+        /// <summary>
+        /// 이 명령은 지금 못 하니 조건이 풀린 뒤 <b>자기부터 다시</b> 돌려야 한다 — 그렇게 표시해 둔 줄.
+        /// <see cref="Run"/>이 남은 명령 앞에 도로 붙인다.
+        ///
+        /// 예전에는 <see cref="Execute"/>가 <see cref="Pending"/>에 직접 끼워 넣었는데, 돌아온 자리에서
+        /// Run이 그 값을 남은 명령으로 덮어써서 <b>그 줄이 조용히 사라졌다</b> — 플레이 중에 refresh를
+        /// 보내면 플레이만 멈추고 컴파일은 안 되면서 응답은 "완료"로 끝났다(2026-09-18 코드 검토).
+        /// </summary>
+        private static string _repeatLine;
+
         /// <summary>추가 명령. 키는 명령 이름, 값은 (인자, 보고서) → 기다려야 하면 true.</summary>
         private static readonly Dictionary<string, Func<string, StringBuilder, bool>> Extra = new();
 
@@ -177,6 +187,10 @@ namespace UnityTools.Editor
         {
             Enabled = !Enabled;
             Pending = string.Empty;
+            _repeatLine = null;
+
+            // 미뤄 둔 명령을 버리면 그 명령이 켜 둔 컴파일 감시도 같이 버려야 한다.
+            ClearWatch();
 
             if (!Enabled)
             {
@@ -241,6 +255,11 @@ namespace UnityTools.Editor
                 File.Delete(RequestFile);
 
                 BatchId = ExtractId(commands);
+
+                // 새 배치가 왔다는 건 앞 배치가 끝났다는 뜻이다. 그때까지 남아 있는 감시는
+                // 주인이 없으므로 **보고하지 않고 버린다** — 안 그러면 이 배치의 첫 이어달리기에
+                // 엉뚱한 컴파일 판정이 붙는다.
+                if (WatchingCompile) ClearWatch();
             }
 
             Pending = string.Empty;
@@ -280,6 +299,14 @@ namespace UnityTools.Editor
                     // 남은 게 없어도 빈 줄 하나를 남긴다 — 그래야 기다림이 끝난 뒤 '완료'가 찍힌다.
                     string rest = string.Join("\n", lines, i + 1, lines.Length - i - 1).Trim();
 
+                    // 조건이 안 돼서 못 돈 명령은 남은 것 앞에 도로 붙인다. 여기서 안 붙이면
+                    // 아래 대입이 그 줄을 덮어써 통째로 사라진다.
+                    if (_repeatLine != null)
+                    {
+                        rest = (_repeatLine + "\n" + rest).Trim();
+                        _repeatLine = null;
+                    }
+
                     Pending = rest.Length > 0 ? rest : "#";
 
                     Flush(report, "대기 중 — 끝나면 남은 명령을 이어서 실행합니다.", append);
@@ -317,7 +344,7 @@ namespace UnityTools.Editor
 
                         EditorApplication.isPlaying = false;
 
-                        Pending = line + Environment.NewLine + Pending;
+                        _repeatLine = line;
 
                         return true;
                     }
@@ -345,7 +372,7 @@ namespace UnityTools.Editor
 
                         EditorApplication.isPlaying = false;
 
-                        Pending = line + Environment.NewLine + Pending;
+                        _repeatLine = line;
 
                         return true;
                     }
@@ -547,6 +574,18 @@ namespace UnityTools.Editor
         }
 
         /// <summary>
+        /// 지켜보기를 없던 일로 한다. <b>보고하지 않고 버릴 때</b> 쓴다 — 감시를 켠 배치가 끝나
+        /// 버렸는데 상태만 남으면, 한참 뒤 엉뚱한 배치에 컴파일 판정이 붙는다(2026-09-18 코드 검토).
+        /// </summary>
+        private static void ClearWatch()
+        {
+            WatchingCompile = false;
+            CompiledCount = 0;
+            CompileSeen = false;
+            CompileDeadline = 0;
+        }
+
+        /// <summary>
         /// 컴파일이 실제로 걸렸는지 보고한다.
         ///
         /// 이게 없으면 <c>refresh</c> 다음의 <c>call</c> 실패가 <b>오타인지 옛 어셈블리인지</b> 구분되지 않는다.
@@ -560,10 +599,7 @@ namespace UnityTools.Editor
             int count = CompiledCount;
             bool ran = CompileSeen;
 
-            WatchingCompile = false;
-            CompiledCount = 0;
-            CompileSeen = false;
-            CompileDeadline = 0;
+            ClearWatch();
 
             if (ran)
             {
@@ -615,7 +651,11 @@ namespace UnityTools.Editor
             // 오류 블록이 '# 완료' 뒤에 붙으면 읽는 쪽은 배치가 안 끝난 것으로 본다. 오류를 고쳐도
             // 응답 파일은 그대로라 스스로 안 풀린다 — 2026-09-17에 그래서 브릿지가 한 번 잠겼고
             // 사용자가 로그를 지워야 했다. 이어서 돌 명령이 없으면 여기서 다시 닫는다.
-            if (string.IsNullOrEmpty(Pending)) block.Append(Tail("완료"));
+            if (string.IsNullOrEmpty(Pending))
+            {
+                block.Append(Tail("완료"));
+                BatchId = string.Empty;
+            }
 
             Directory.CreateDirectory(Root);
             File.AppendAllText(ResponseFile, block.ToString(), Encoding.UTF8);
@@ -638,6 +678,11 @@ namespace UnityTools.Editor
 
             if (append) File.AppendAllText(ResponseFile, report.ToString(), Encoding.UTF8);
             else File.WriteAllText(ResponseFile, report.ToString(), Encoding.UTF8);
+
+            // 배치가 끝났으면 이름을 놓는다. 들고 있으면 나중에 배치 밖에서 난 컴파일 오류가
+            // 그 이름을 달고 완료 줄을 쓰고, 같은 이름을 다시 쓰는 쪽이 그 낡은 줄을 자기 것으로
+            // 읽는다 — 이름을 붙인 이유가 바로 그걸 막으려는 것이었다(2026-09-18 코드 검토).
+            if (tail == "완료") BatchId = string.Empty;
         }
 
         private static void WriteStatus()
