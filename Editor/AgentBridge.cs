@@ -53,6 +53,7 @@ namespace UnityTools.Editor
         private const string SeenKey = "UnityTools.AgentBridge.CompileSeen";
         private const string IdKey = "UnityTools.AgentBridge.BatchId";
         private const string DeadlineKey = "UnityTools.AgentBridge.CompileDeadline";
+        private const string ActiveKey = "UnityTools.AgentBridge.BatchActive";
 
         // 컴파일을 부탁한 뒤 유니티가 실제로 시작하기까지 걸리는 시간을 봐 준다. 이만큼은 "안 걸렸다"고
         // 판정하지 않는다 — 시작 전에 판정하면 멀쩡히 도는 컴파일을 무동작으로 잘못 보고한다.
@@ -72,8 +73,14 @@ namespace UnityTools.Editor
         private const double PollSeconds = 0.5;
 
         private static double _nextPoll;
-        private static readonly List<string> Captured = new();
-        private static bool _collecting;
+        // 콘솔은 메모리가 아니라 파일에 쌓는다. 한 배치 안에서도 refresh·play는 도메인 리로드를
+        // 일으켜 정적 필드를 날려 버리기 때문이다 — 예전에는 Run 한 번의 범위에서만 받아서
+        // **play가 도는 동안 나온 로그를 아무도 못 받았다.** 그 배치의 응답에는 `# 콘솔` 절 자체가
+        // 안 붙었고, 그래서 빈 결과가 "경고가 없다"가 아니라 "안 봤다"가 됐다(2026-09-18).
+        private const string ConsoleFile = Root + "/console.txt";
+
+        // 플레이가 길면 로그가 끝없이 쌓인다. 이만큼에서 멈추고 끊겼다는 것을 응답에 적는다.
+        private const long ConsoleLimit = 256 * 1024;
 
         /// <summary>
         /// 이 명령은 지금 못 하니 조건이 풀린 뒤 <b>자기부터 다시</b> 돌려야 한다 — 그렇게 표시해 둔 줄.
@@ -93,6 +100,10 @@ namespace UnityTools.Editor
             EditorApplication.update += Poll;
             CompilationPipeline.assemblyCompilationFinished += OnAssemblyCompiled;
             CompilationPipeline.compilationStarted += OnCompilationStarted;
+
+            // 콘솔은 늘 듣고 있는다. 배치가 도는 동안만 실제로 적는다(<see cref="Collect"/>).
+            // 도메인 리로드 뒤에도 여기가 다시 돌아 붙으므로 play 중의 로그가 안 빠진다.
+            Application.logMessageReceived += Collect;
         }
 
         /// <summary>
@@ -172,6 +183,16 @@ namespace UnityTools.Editor
             set => EditorPrefs.SetString(IdKey, value ?? string.Empty);
         }
 
+        /// <summary>
+        /// 배치가 도는 중인가. 이 동안에만 콘솔을 적는다 — 배치 밖에서 나는 로그까지 담으면
+        /// 다음 배치의 응답에 남의 로그가 섞인다.
+        /// </summary>
+        private static bool BatchActive
+        {
+            get => EditorPrefs.GetBool(ActiveKey, false);
+            set => EditorPrefs.SetBool(ActiveKey, value);
+        }
+
         /// <summary>이 시각까지는 "컴파일이 안 걸렸다"고 판정하지 않는다.</summary>
         private static double CompileDeadline
         {
@@ -189,8 +210,9 @@ namespace UnityTools.Editor
             Pending = string.Empty;
             _repeatLine = null;
 
-            // 미뤄 둔 명령을 버리면 그 명령이 켜 둔 컴파일 감시도 같이 버려야 한다.
+            // 미뤄 둔 명령을 버리면 그 명령이 켜 둔 컴파일 감시와 콘솔 수집도 같이 버려야 한다.
             ClearWatch();
+            BatchActive = false;
 
             if (!Enabled)
             {
@@ -256,6 +278,10 @@ namespace UnityTools.Editor
 
                 BatchId = ExtractId(commands);
 
+                // 이제부터 이 배치가 끝날 때까지 콘솔을 받는다. 앞 배치가 남긴 것은 버린다.
+                BatchActive = true;
+                if (File.Exists(ConsoleFile)) File.Delete(ConsoleFile);
+
                 // 새 배치가 왔다는 건 앞 배치가 끝났다는 뜻이다. 그때까지 남아 있는 감시는
                 // 주인이 없으므로 **보고하지 않고 버린다** — 안 그러면 이 배치의 첫 이어달리기에
                 // 엉뚱한 컴파일 판정이 붙는다.
@@ -277,9 +303,6 @@ namespace UnityTools.Editor
 
             if (append) ReportCompile(report);
 
-            Captured.Clear();
-            _collecting = true;
-            Application.logMessageReceived += Collect;
 
             try
             {
@@ -316,11 +339,6 @@ namespace UnityTools.Editor
             catch (Exception e)
             {
                 report.AppendLine("!! " + e);
-            }
-            finally
-            {
-                Application.logMessageReceived -= Collect;
-                _collecting = false;
             }
 
             Flush(report, "완료", append);
@@ -553,14 +571,31 @@ namespace UnityTools.Editor
             return null;
         }
 
+        /// <summary>
+        /// 콘솔 한 줄을 받는다. <b>배치가 도는 동안이면 파일에 적는다</b> — 메모리에 두면
+        /// 도메인 리로드(refresh·play)에 날아가서 정작 플레이 중의 로그를 못 받는다.
+        /// </summary>
         private static void Collect(string condition, string stackTrace, LogType type)
         {
-            if (!_collecting) return;
+            if (!Enabled || !BatchActive) return;
 
-            // 스택은 길기만 하고 대부분 쓸모없다. 오류일 때만 첫 줄을 붙인다.
-            string head = type == LogType.Log ? "" : $"[{type}] ";
+            try
+            {
+                // 너무 쌓이면 멈춘다. 끊겼다는 것은 Flush가 파일 크기를 보고 응답에 적는다.
+                var file = new FileInfo(ConsoleFile);
 
-            Captured.Add(head + condition);
+                if (file.Exists && file.Length >= ConsoleLimit) return;
+
+                // 스택은 길기만 하고 대부분 쓸모없다. 오류일 때만 종류를 앞에 붙인다.
+                string head = type == LogType.Log ? "" : $"[{type}] ";
+
+                Directory.CreateDirectory(Root);
+                File.AppendAllText(ConsoleFile, head + condition + Environment.NewLine, Encoding.UTF8);
+            }
+            catch (IOException)
+            {
+                // 로그를 적다 실패했다고 브릿지가 멈추면 안 된다. 그 줄만 버린다.
+            }
         }
 
         /// <summary>이제부터 컴파일이 도는지 지켜본다. 컴파일을 거는 명령이 부른다.</summary>
@@ -655,21 +690,56 @@ namespace UnityTools.Editor
             {
                 block.Append(Tail("완료"));
                 BatchId = string.Empty;
+                BatchActive = false;
             }
 
             Directory.CreateDirectory(Root);
             File.AppendAllText(ResponseFile, block.ToString(), Encoding.UTF8);
         }
 
-        private static void Flush(StringBuilder report, string tail, bool append)
+        /// <summary>
+        /// 그동안 쌓인 콘솔을 보고서에 옮기고 파일을 비운다. 이어달리기마다 비우므로
+        /// 각 구간의 로그가 그 구간 응답에 붙는다 — 플레이 중에 난 것도 여기로 들어온다.
+        /// </summary>
+        private static void AppendConsole(StringBuilder report)
         {
-            if (Captured.Count > 0)
+            if (!File.Exists(ConsoleFile)) return;
+
+            string text;
+
+            try
             {
+                var file = new FileInfo(ConsoleFile);
+                bool cut = file.Length >= ConsoleLimit;
+
+                text = File.ReadAllText(ConsoleFile, Encoding.UTF8);
+                File.Delete(ConsoleFile);
+
+                if (text.Length == 0) return;
+
                 report.AppendLine();
                 report.AppendLine("# 콘솔");
 
-                foreach (string log in Captured) report.AppendLine("  " + log);
+                foreach (string line in text.Split('\n'))
+                {
+                    string trimmed = line.TrimEnd('\r');
+
+                    if (trimmed.Length > 0) report.AppendLine("  " + trimmed);
+                }
+
+                // 잘린 것을 말하지 않으면 "이게 전부"로 읽힌다.
+                if (cut) report.AppendLine($"  … 로그가 {ConsoleLimit / 1024}KB를 넘어 이후는 안 받았습니다.");
             }
+            catch (IOException)
+            {
+                report.AppendLine();
+                report.AppendLine("# 콘솔 — 읽지 못했습니다(파일이 잠겨 있었습니다).");
+            }
+        }
+
+        private static void Flush(StringBuilder report, string tail, bool append)
+        {
+            AppendConsole(report);
 
             report.AppendLine();
             report.Append(Tail(tail));
@@ -682,7 +752,12 @@ namespace UnityTools.Editor
             // 배치가 끝났으면 이름을 놓는다. 들고 있으면 나중에 배치 밖에서 난 컴파일 오류가
             // 그 이름을 달고 완료 줄을 쓰고, 같은 이름을 다시 쓰는 쪽이 그 낡은 줄을 자기 것으로
             // 읽는다 — 이름을 붙인 이유가 바로 그걸 막으려는 것이었다(2026-09-18 코드 검토).
-            if (tail == "완료") BatchId = string.Empty;
+            if (tail != "완료") return;
+
+            BatchId = string.Empty;
+
+            // 배치가 끝났으니 콘솔도 그만 받는다 — 계속 받으면 다음 배치 응답에 남의 로그가 섞인다.
+            BatchActive = false;
         }
 
         private static void WriteStatus()
