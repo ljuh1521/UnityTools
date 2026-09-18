@@ -1,7 +1,9 @@
 {
     "name": "UnityTools.UI",
     "rootNamespace": "UnityTools.UI",
-    "references": [],
+    "references": [
+        "Unity.TextMeshPro"
+    ],
     "includePlatforms": [],
     "excludePlatforms": [],
     "allowUnsafeCode": false,

@@ -1,5 +1,54 @@
 # 변경 기록
 
+## 0.7.0 — UI 체계가 들어왔다
+
+DefenceR에서 쓰던 **이름표로 부품을 찾는 UI 체계**를 옮겨 왔다(`Runtime/UI/`). 인스펙터에서 부품을
+하나하나 연결하지 않아도 되고, 계층 구조를 바꿔도 코드가 안 깨진다. 부품을 프리팹으로 두면 한 번
+고쳐 쓰는 모든 자리가 같이 고쳐진다 — 그 생태계를 프로젝트 경계 너머로 넓히는 게 목적이다.
+
+들어온 것 19개 — `IElementUI` · `ElementUI` · `GenericUI` · `ToastUI`, 그리고 `Component/`의
+`ImageUI` · `TextUI` · `ButtonUI` · `GridUI` · `ScrollViewUI` · `SliderUI` · `ToggleUI` ·
+`OutlineUI` · `ShadowUI` · `OutlineShadowUI` · `ImageTextUI` · `ImageSwitchUI` · `SpriteAnimUI` ·
+`TextGridUI` · `TextBottomFitUI`.
+
+**이름표 목록은 프로젝트가 갖는다.** 게임마다 필요한 이름표가 다른데(Build·Spawn 대 Deck·Draw),
+패키지가 그 목록을 갖고 있으면 게임마다 **패키지 파일을 고쳐야 해서** 공용이 아니게 된다.
+프로젝트가 자기 enum을 만들어 `UIId.Register(typeof(내enum))`으로 등록하면, 인스펙터가 이름
+드롭다운으로 그려지고 공용 부품은 `UIId.Of("Image")`처럼 **이름으로** 제 자리를 찾는다.
+
+### 쓰던 쪽이 고쳐야 하는 것
+
+- **네임스페이스가 `UnityTools.UI`로 바뀌었다** — 쓰는 파일에 `using UnityTools.UI;`가 필요하다.
+- **`IElementUI.Id`가 enum에서 `int`로 바뀌었다.** 비교는 `UIId.None`과, 표시는 `UIId.Name(id)`로.
+  저장 형태는 그대로라 **이미 만든 프리팹의 이름표 값은 이어진다.**
+- **`Get`·`TryGet`·`GetTransform`·`GetObject`는 `int`만 받는다.** 자기 enum을 그대로 넘기고 싶으면
+  프로젝트에 확장 메서드를 둔다 — `public static T Get<T>(this GenericUI ui, MyId id) => ui.Get<T>((int)id);`
+  패키지에 `Enum`을 받는 판을 두지 않는 이유는 **넘길 때마다 힙 할당이 생겨** 매 프레임 도는
+  화면에서 GC 끊김이 되기 때문이다.
+- **`ButtonUI`의 게임 동작은 비어 있다.** `Button_ClosePopup`·`Button_CloseScene`·`Button_GoLobby`·
+  `Button_SetViewSize`는 이름만 남기고 몸통은 `ButtonUI.ClosePopup` 같은 정적 `Action`을 부른다.
+  프로젝트가 시작할 때 꽂는다. **이름을 다른 클래스로 옮기면 안 된다** — 인스펙터의 클릭 연결은
+  메서드 이름을 글자로 저장해 두고 그 타입에서 찾으므로, 옮기면 **오류 없이 그냥 아무 일도 안 한다.**
+- **`ToastUI`가 사라질 때 할 일**은 `ToastUI.Ended`에 꽂는다.
+
+### 아직 안 옮긴 것
+
+부품 프리팹(`Unit/`·`Generic/`)은 그대로 프로젝트에 있다. Quantum·Photon에 묶인 부품
+(`HeroCardUI`·`QuantumTextUI` 등)과 게임 데이터에 묶인 것은 옮기지 않는다.
+
+## 0.6.0
+
+브릿지를 매일 쓰는 쪽(DefenceR)에서 하루치 실측을 받아 신뢰성 두 건을 고쳤다.
+
+- **`id <토큰>` 명령 신규 — 응답이 내 배치의 것인지 가릴 수 있다.** 넣으면 응답의 시작·끝 줄에
+  `# 실행 [토큰]` · `# 완료 [토큰]`으로 되돌려준다. 지금까지는 `# 완료`로 끝난 것만 보고 판단해서
+  **이전 실행 결과를 읽고 잘못 보고하는 일이 하루에 세 번** 났다(결과에 특정 단어가 있는지로
+  우회하면 그 단어가 이전 실행에도 있을 때 그대로 속는다). 토큰 없이 쓰던 방식은 그대로 동작한다.
+- **컴파일 오류가 나도 응답을 닫는다.** 오류 블록을 `# 완료` 뒤에 붙이는 바람에 파일이 닫히지 않은
+  채 남았고, 읽는 쪽이 "아직 도는 중"으로 보아 **브릿지가 잠겼다**(오류를 고쳐도 응답 파일은
+  그대로라 스스로 안 풀려서 사용자가 로그를 지워야 했다). 이어서 돌 명령이 없으면 오류 뒤에 다시
+  닫는 줄을 붙인다.
+
 ## 0.5.0
 
 - **`refresh`가 컴파일이 실제로 걸렸는지 보고한다.** 유니티가 밖에서 고친 `.cs`를 놓칠 때가 있는데,

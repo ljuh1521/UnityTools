@@ -51,6 +51,7 @@ namespace UnityTools.Editor
         private const string WatchKey = "UnityTools.AgentBridge.WatchCompile";
         private const string CompiledKey = "UnityTools.AgentBridge.CompiledCount";
         private const string SeenKey = "UnityTools.AgentBridge.CompileSeen";
+        private const string IdKey = "UnityTools.AgentBridge.BatchId";
         private const string DeadlineKey = "UnityTools.AgentBridge.CompileDeadline";
 
         // 컴파일을 부탁한 뒤 유니티가 실제로 시작하기까지 걸리는 시간을 봐 준다. 이만큼은 "안 걸렸다"고
@@ -147,6 +148,20 @@ namespace UnityTools.Editor
             set => EditorPrefs.SetBool(SeenKey, value);
         }
 
+        /// <summary>
+        /// 이번 배치를 부르는 이름. 넣는 쪽이 <c>id &lt;토큰&gt;</c>으로 정하고, 응답의 시작·끝 줄에 되돌려준다.
+        ///
+        /// 이게 없으면 <c>response.txt</c>가 <c># 완료</c>로 끝난 것을 보고도 <b>그게 방금 보낸 명령의
+        /// 것인지 이전 것인지 알 수 없다.</b> 2026-09-17에 그것 때문에 이전 실행 결과를 읽고 잘못
+        /// 보고한 일이 세 번 있었다(결과에 특정 단어가 있는지로 우회했는데, 그 단어가 이전 실행에도
+        /// 있으면 그대로 속는다).
+        /// </summary>
+        private static string BatchId
+        {
+            get => EditorPrefs.GetString(IdKey, string.Empty);
+            set => EditorPrefs.SetString(IdKey, value ?? string.Empty);
+        }
+
         /// <summary>이 시각까지는 "컴파일이 안 걸렸다"고 판정하지 않는다.</summary>
         private static double CompileDeadline
         {
@@ -224,6 +239,8 @@ namespace UnityTools.Editor
 
                 commands = File.ReadAllText(RequestFile);
                 File.Delete(RequestFile);
+
+                BatchId = ExtractId(commands);
             }
 
             Pending = string.Empty;
@@ -237,7 +254,7 @@ namespace UnityTools.Editor
         {
             var report = new StringBuilder();
 
-            report.AppendLine(append ? "# 이어서 " + Stamp() : "# 실행 " + Stamp());
+            report.AppendLine((append ? "# 이어서" : "# 실행") + Label() + " " + Stamp());
 
             if (append) ReportCompile(report);
 
@@ -339,6 +356,10 @@ namespace UnityTools.Editor
                     AssetDatabase.Refresh();
                     CompilationPipeline.RequestScriptCompilation(RequestScriptCompilationOptions.CleanBuildCache);
                     return true;
+
+                case "id":
+                    // 배치를 읽기 전에 이미 뽑아 뒀다. 여기서는 넘긴다.
+                    return false;
 
                 case "menu":
                     if (!EditorApplication.ExecuteMenuItem(argument))
@@ -584,9 +605,20 @@ namespace UnityTools.Editor
 
             if (errors.Count == 0) return;
 
+            var block = new StringBuilder();
+
+            block.AppendLine();
+            block.AppendLine($"# 컴파일 오류 {Stamp()}");
+
+            foreach (string error in errors) block.AppendLine("  " + error);
+
+            // 오류 블록이 '# 완료' 뒤에 붙으면 읽는 쪽은 배치가 안 끝난 것으로 본다. 오류를 고쳐도
+            // 응답 파일은 그대로라 스스로 안 풀린다 — 2026-09-17에 그래서 브릿지가 한 번 잠겼고
+            // 사용자가 로그를 지워야 했다. 이어서 돌 명령이 없으면 여기서 다시 닫는다.
+            if (string.IsNullOrEmpty(Pending)) block.Append(Tail("완료"));
+
             Directory.CreateDirectory(Root);
-            File.AppendAllText(ResponseFile,
-                $"\n# 컴파일 오류 {Stamp()}\n  " + string.Join("\n  ", errors) + "\n");
+            File.AppendAllText(ResponseFile, block.ToString(), Encoding.UTF8);
         }
 
         private static void Flush(StringBuilder report, string tail, bool append)
@@ -600,7 +632,7 @@ namespace UnityTools.Editor
             }
 
             report.AppendLine();
-            report.AppendLine("# " + tail);
+            report.Append(Tail(tail));
 
             Directory.CreateDirectory(Root);
 
@@ -612,6 +644,35 @@ namespace UnityTools.Editor
         {
             Directory.CreateDirectory(Root);
             File.WriteAllText(StatusFile, Stamp(), Encoding.UTF8);
+        }
+
+        /// <summary>넣는 쪽이 <c>id &lt;토큰&gt;</c>으로 이번 배치 이름을 정한다. 없으면 빈 문자열.</summary>
+        private static string ExtractId(string commands)
+        {
+            foreach (string raw in commands.Split('\n'))
+            {
+                string line = raw.Trim();
+
+                if (!line.StartsWith("id ")) continue;
+
+                // 대괄호가 섞이면 읽는 쪽이 줄을 가려낼 때 깨진다.
+                return line.Substring(3).Trim().Replace("[", string.Empty).Replace("]", string.Empty);
+            }
+
+            return string.Empty;
+        }
+
+        private static string Label()
+        {
+            string id = BatchId;
+
+            return id.Length == 0 ? string.Empty : " [" + id + "]";
+        }
+
+        /// <summary>배치 이름을 붙인 끝 줄. 읽는 쪽이 자기가 보낸 배치인지 가릴 수 있게 한다.</summary>
+        private static string Tail(string text)
+        {
+            return "# " + text + Label() + Environment.NewLine;
         }
 
         private static string Stamp()

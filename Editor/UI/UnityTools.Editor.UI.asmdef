@@ -3,6 +3,7 @@
     "rootNamespace": "UnityTools.Editor",
     "references": [
         "UnityTools.Editor",
+        "UnityTools.UI",
         "Unity.TextMeshPro"
     ],
     "includePlatforms": [

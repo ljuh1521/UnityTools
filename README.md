@@ -45,6 +45,7 @@
 
 | 명령 | 하는 일 |
 |---|---|
+| `id <토큰>` | 이번 배치에 이름을 붙인다. 응답의 시작·끝 줄에 `[토큰]`으로 되돌아온다 |
 | `refresh` | 에셋 재임포트. **C#을 고쳤으면 반드시 먼저.** 컴파일 뒤 남은 명령을 이어서 실행하고, **컴파일이 실제로 걸렸는지 보고한다** |
 | `recompile` | 빌드 캐시를 지우고 **전체를 다시 만든다**(수 분). `refresh`가 "컴파일이 안 걸렸습니다"라고 했을 때만 쓴다 |
 | `menu <메뉴 경로>` | 메뉴 항목 실행 |
@@ -75,6 +76,22 @@ public static class MyCommands
 
 **주의:** 방금 만든 메뉴 항목은 `ExecuteMenuItem`이 못 찾는 경우가 있다(같은 경로가 이전에 서브메뉴였을 때).
 그럴 땐 `call`을 쓴다.
+
+**내 배치의 결과인지 가리기** — `response.txt`는 이전 실행 결과가 남아 있는 파일이다. `# 완료`로
+끝난 것만 보고 판단하면 **이전 것을 읽고도 모른다.** 배치 첫 줄에 이름을 붙인다.
+
+```
+id fix-slider
+refresh
+call Game.Editor.UIPrefabValidator.Validate
+```
+
+그러면 응답이 `# 실행 [fix-slider] …` 로 시작하고 `# 완료 [fix-slider]` 로 끝난다.
+읽는 쪽은 그 줄이 나올 때까지만 기다리면 된다.
+
+```bash
+Select-String -Path Logs\Agent\response.txt -Pattern '^# 완료 \[fix-slider\]'
+```
 
 **컴파일이 걸렸는지 확인하기** — `refresh` 다음 줄에 둘 중 하나가 찍힌다.
 
@@ -190,6 +207,41 @@ call UnityTools.Editor.PrefabInstanceInfo.Dump Assets/Prefabs/UI/Foo.prefab|Grid
 ## Runtime
 
 지금까지는 에디터 전용이었는데 0.4.0부터 **빌드에도 들어가는 코드**가 들어 있다.
+
+### UI 부품 체계 — `ElementUI` · `GenericUI`
+
+부품에 **이름표**를 붙여 두고 `Get<TextUI>(...)`로 꺼내 쓴다. 인스펙터에서 하나하나 연결하지
+않아도 되고, 계층 구조를 바꿔도 코드가 안 깨진다.
+
+**이름표 목록은 프로젝트가 갖는다** — 게임마다 필요한 게 다르고, 패키지가 목록을 쥐고 있으면
+게임마다 패키지 파일을 고쳐야 해서 공용이 아니게 된다. 자기 enum을 만들어 등록한다:
+
+```csharp
+[RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+private static void RegisterIds() => UIId.Register(typeof(UIName));
+```
+
+등록하면 인스펙터가 **이름 드롭다운**으로 그려지고, 공용 부품은 `UIId.Of("Image")`처럼 **이름으로**
+제 자리를 찾는다(번호를 어떻게 매기든 맞는다). 등록을 안 하면 부품이 자기 자리를 못 찾고 경고가 뜬다.
+
+자기 enum을 그대로 넘기고 싶으면 프로젝트에 확장 메서드를 하나 둔다:
+
+```csharp
+public static T Get<T>(this GenericUI ui, UIName id) where T : class, IElementUI
+    => ui.Get<T>((int)id);
+```
+
+패키지가 `Enum`을 받는 판을 두지 않는 이유는 **넘길 때마다 힙 할당이 생겨** 매 프레임 도는 화면에서
+GC 끊김이 되기 때문이다.
+
+**중첩된 묶음에서 수집이 멈춘다.** 안쪽 묶음은 자기 부품을 자기가 관리하므로 이름표가 바깥으로
+새지 않고, 그래서 같은 이름표를 화면마다 재사용할 수 있다. 대신 "안쪽 부품이 왜 비어 있는지"가
+계층만 봐서는 안 보이니 진단할 때 이 경계를 같이 본다.
+
+**⚠ `ButtonUI`의 `Button_*` 네 메서드는 이름을 옮기면 안 된다.** 인스펙터의 클릭 연결은 메서드
+이름을 글자로 저장해 두고 그 타입에서 찾으므로, 다른 클래스나 확장 메서드로 옮기면 유니티가
+못 찾고 **오류도 없이 그냥 아무 일도 안 한다.** 몸통만 비워 두고 `ButtonUI.ClosePopup` 같은
+정적 `Action`에 프로젝트가 꽂는다.
 
 ### UI 아웃라인 — `UI/Outline` 셰이더 + `OutlineWidthModifier`
 
