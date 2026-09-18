@@ -2,11 +2,15 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Text;
 using UnityEditor;
 using UnityEditor.Compilation;
 using UnityEngine;
+
+// UnityEditor에도 PackageInfo가 따로 있어 그냥 쓰면 모호하다.
+using PackageInfo = UnityEditor.PackageManager.PackageInfo;
 
 namespace UnityTools.Editor
 {
@@ -94,6 +98,16 @@ namespace UnityTools.Editor
 
         /// <summary>추가 명령. 키는 명령 이름, 값은 (인자, 보고서) → 기다려야 하면 true.</summary>
         private static readonly Dictionary<string, Func<string, StringBuilder, bool>> Extra = new();
+
+        /// <summary>
+        /// <b>지금 도는 이 코드</b>가 올라온 시각. 정적 생성자는 도메인 리로드마다 다시 도는데,
+        /// 리로드는 컴파일 직후에 일어나므로 "이 판이 만들어진 때"의 좋은 대용이다.
+        ///
+        /// <c>Library/ScriptAssemblies</c>의 DLL 시각을 쓰면 안 된다 — 유니티(Bee)는 내용이
+        /// 달라졌을 때만 거기로 복사해서, 다시 컴파일해도 시각이 그대로다(2026-09-15에 그걸
+        /// 근거로 틀린 결론을 냈다).
+        /// </summary>
+        private static readonly DateTime LoadedAt = DateTime.Now;
 
         static AgentBridge()
         {
@@ -302,6 +316,7 @@ namespace UnityTools.Editor
             report.AppendLine((append ? "# 이어서" : "# 실행") + Label() + " " + Stamp());
 
             if (append) ReportCompile(report);
+            else WarnIfStale(report);
 
 
             try
@@ -595,6 +610,43 @@ namespace UnityTools.Editor
             catch (IOException)
             {
                 // 로그를 적다 실패했다고 브릿지가 멈추면 안 된다. 그 줄만 버린다.
+            }
+        }
+
+        /// <summary>
+        /// 이 패키지의 소스가 <b>지금 도는 코드보다 새로우면</b> 배치 첫머리에 알린다.
+        ///
+        /// 패키지를 고치고 <c>recompile</c> 없이 명령을 보내면 옛 코드가 실행되는데, 겉으로는
+        /// 멀쩡히 도는 것처럼 보인다 — 2026-09-18에 브릿지 자신을 고쳐 놓고 그대로 시험해서
+        /// "안 고쳐졌다"로 결론 낼 뻔했다. <b>양쪽 세션이 같은 자리에서 동시에 빠뜨렸다</b>.
+        /// 기억해야만 발동하는 규칙은 그렇게 되므로 여기서 말해 준다.
+        ///
+        /// 프로젝트(<c>Assets/</c>) 쪽은 안 본다 — 파일이 많아 비싸고, 그쪽은 <c>refresh</c>가
+        /// 컴파일 여부를 따로 보고한다.
+        /// </summary>
+        private static void WarnIfStale(StringBuilder report)
+        {
+            try
+            {
+                var info = PackageInfo.FindForAssembly(typeof(AgentBridge).Assembly);
+
+                // 패키지가 아니라 프로젝트 안에 그대로 들어 있으면 이 경고는 뜻이 없다.
+                if (info == null) return;
+
+                var stale = Directory.GetFiles(info.resolvedPath, "*.cs", SearchOption.AllDirectories)
+                    .Where(f => File.GetLastWriteTime(f) > LoadedAt)
+                    .Select(Path.GetFileName)
+                    .ToList();
+
+                if (stale.Count == 0) return;
+
+                report.AppendLine($"!! 패키지 소스 {stale.Count}개가 지금 도는 코드보다 새롭습니다 " +
+                                  $"({string.Join(", ", stale.Take(3))}{(stale.Count > 3 ? " 외" : "")}). " +
+                                  "recompile을 먼저 넣지 않으면 옛 코드가 실행됩니다.");
+            }
+            catch (IOException)
+            {
+                // 못 읽었다고 배치를 막을 일은 아니다.
             }
         }
 
