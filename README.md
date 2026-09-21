@@ -273,7 +273,7 @@ GC 끊김이 되기 때문이다.
 
 ### 부품 프리팹 — `Runtime/UI/Prefabs/`
 
-위 부품들을 조립해 둔 프리팹 25개. `Unit/` 은 가장 작은 조각(이미지·글자), `Generic/` 은 그것을
+위 부품들을 조립해 둔 프리팹 27개. `Unit/` 은 가장 작은 조각(이미지·글자), `Generic/` 은 그것을
 엮은 것(버튼·격자·스크롤뷰·테두리 이미지 등)이다. 화면을 만들 때 이걸 중첩해 쓰고, **부품을 한 번
 고치면 그걸 쓰는 모든 자리가 같이 고쳐진다.**
 
@@ -282,24 +282,31 @@ GC 끊김이 되기 때문이다.
 
 - **글자** — `Unit/Text` 는 폰트를 비워 뒀다. TMP 가 그 프로젝트의 기본 폰트
   (`TMP Settings` 의 `Default Font Asset`)를 자동으로 쓴다. 기본 폰트가 없으면 경고가 뜬다.
-- **그림** — 스프라이트는 쓰는 쪽에서 꽂는다. 기본 모양이 필요하면 유니티 내장 스프라이트를 쓴다.
+- **그림** — 색 없는 흰 실루엣 판 다섯 장은 패키지가 갖고 있다(`Runtime/UI/Sprites/`):
+  `round_128` · `round_150` · `square_64` · `circle_256` · `hexagon_128`. 쓸 때 색을 입히는
+  방식이라 특정 게임의 그림이 아니다. **그림다운 그림(아이콘·배경·장식)은 쓰는 쪽에서 꽂는다.**
 - **머티리얼** — `UI/Silhouette`·`UI/Outline` 은 패키지가 `Runtime/Resources/Materials/` 에
   갖고 있다. 부품 코드가 `Resources.Load("Materials/…")` 로 찾으므로 **그 경로를 바꾸면 안 된다.**
 
 #### 여기 없는 부품이 있는 이유
 
-DefenceR 에서 옮겨 올 때 **13개는 남겨야 했다.** 다시 조사하지 않도록 이유를 적어 둔다 —
-전부 "패키지가 프로젝트 것을 물게 된다"는 같은 이유이고, **지금 구조로는 풀 수 없다.**
+DefenceR 에서 옮겨 올 때 **11개는 남겨야 했다.** 다시 조사하지 않도록 이유를 적어 둔다 —
+전부 "패키지가 프로젝트 것을 물게 된다"는 같은 이유다.
 
-| 남은 것 | 무는 것 |
-|---|---|
-| `Button_TextLocal` · `Image_AutoSizeTextLocal` · `Image_TextLocal` · `Outline_TextLocal` · `ToastBig_Local` | I2 Localization (서드파티 에셋) |
-| `Gage` · `Toast` · `Image_GridText` · `HeroLevelRow` | 게임 그림(판·버튼·아이콘) |
-| `SpawnHero` · `Text_Quantum` | 그 게임 전용 스크립트 |
-| `RawImage_Mask` | Photon 에 묶인 `RawImageUI` |
+| 남은 것 | 무는 것 | 풀 수 있나 |
+|---|---|---|
+| `Button_TextLocal` · `Image_AutoSizeTextLocal` · `Image_TextLocal` · `Outline_TextLocal` · `ToastBig_Local` | I2 Localization (서드파티 에셋) | 없다 |
+| `SpawnHero` · `Text_Quantum` | 그 게임 전용 스크립트 | 없다 |
+| `RawImage_Mask` | Photon 에 묶인 `RawImageUI` | 없다 |
+| `Toast` | `board_alarm_128`(부드럽게 번진 판) | 그 그림을 공용으로 올리면 |
+| `HeroLevelRow` | 묘비·명패·자물쇠 그림 | 그 게임 그림이라 없다. 쓰는 곳도 0 |
 
-그림을 무는 넷은 **스프라이트를 내장 것으로 바꾸면 옮길 수 있다** — 다만 생김새가 바뀌므로
-쓰는 쪽에서 다시 꽂아야 한다. 나머지 아홉은 서드파티·게임 코드에 묶여 있어 방법이 없다.
+**`Gage` 와 `Image_GridText` 는 풀려서 들어왔다**(2026-09-21). 둘 다 흰 판 하나(`round_128`)만
+물고 있었고, 그 판이 공용으로 올라오면서 막던 이유가 사라졌다.
+
+**유니티 내장 스프라이트로 갈아 끼우는 길은 답이 아니었다** — 실제로 바꿔 렌더해 보니
+`HeroLevelRow` 의 묘비와 촛불이 흰 네모가 되고 자물쇠는 사라졌다. **그림 자체를 공용으로
+올릴 수 있는가**로 판단한다.
 
 ### UI 아웃라인 — `UI/Outline` 셰이더 + `OutlineWidthModifier`
 
