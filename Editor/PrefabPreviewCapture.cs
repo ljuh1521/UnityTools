@@ -68,7 +68,10 @@ namespace UnityTools.Editor
         }
 
         /// <summary>프리팹 하나를 찍어 저장하고 파일 경로를 돌려준다.</summary>
-        public static string Capture(GameObject prefab)
+        /// <param name="prepare">렌더 직전에 <b>복제된 인스턴스</b>를 손볼 기회. 여기서 무엇을 바꾸든
+        /// 프리팹 파일에는 닿지 않는다 — "이렇게 바꾸면 어떻게 보이나"를 저장 없이 보려는 자리다.</param>
+        /// <param name="suffix">파일 이름 뒤에 붙일 말. 원본과 나란히 두고 비교할 때 쓴다.</param>
+        public static string Capture(GameObject prefab, Action<GameObject> prepare = null, string suffix = null)
         {
             if (prefab == null) return null;
 
@@ -79,6 +82,12 @@ namespace UnityTools.Editor
             var instance = UnityEngine.Object.Instantiate(prefab);
             Hide(instance);
             temp.Add(instance);
+
+            if (prepare != null)
+            {
+                try { prepare(instance); }
+                catch (Exception e) { Debug.LogWarning($"[미리보기] 손질 중 예외: {e.Message}"); }
+            }
 
             var cameraGo = new GameObject("PreviewCamera", typeof(Camera));
             Hide(cameraGo);
@@ -103,7 +112,7 @@ namespace UnityTools.Editor
                 return null;
             }
 
-            string file = Path.Combine(OutputDir, prefab.name + ".png");
+            string file = Path.Combine(OutputDir, prefab.name + suffix + ".png");
             Render(camera, width, height, file);
 
             Cleanup(temp);
