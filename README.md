@@ -282,9 +282,17 @@ GC 끊김이 되기 때문이다.
 
 - **글자** — `Unit/Text` 는 폰트를 비워 뒀다. TMP 가 그 프로젝트의 기본 폰트
   (`TMP Settings` 의 `Default Font Asset`)를 자동으로 쓴다. 기본 폰트가 없으면 경고가 뜬다.
-- **그림** — 색 없는 흰 실루엣 판 다섯 장은 패키지가 갖고 있다(`Runtime/UI/Sprites/`):
-  `round_128` · `round_150` · `square_64` · `circle_256` · `hexagon_128`. 쓸 때 색을 입히는
+- **그림** — 색 없는 흰 실루엣 판을 패키지가 갖고 있다(`Runtime/UI/Sprites/`). 쓸 때 색을 입히는
   방식이라 특정 게임의 그림이 아니다. **그림다운 그림(아이콘·배경·장식)은 쓰는 쪽에서 꽂는다.**
+
+  | 이름 | 늘어나는 방향(9분할 테두리) |
+  |---|---|
+  | `Round` | 사방 (70/70/70/70) |
+  | `Capsule` | 가로만 (38/0/38/0) |
+  | `Box` | 사방 (5/5/5/5) |
+  | `Circle` | 안 늘어남 |
+  | `Hexagon` | 가로만 (50/0/50/0) |
+  | `CapsuleSoft` | 가로만 (40/0/40/0) · 가장자리가 부드럽게 번진다 |
 - **머티리얼** — `UI/Silhouette`·`UI/Outline` 은 패키지가 `Runtime/Resources/Materials/` 에
   갖고 있다. 부품 코드가 `Resources.Load("Materials/…")` 로 찾으므로 **그 경로를 바꾸면 안 된다.**
 
@@ -298,10 +306,11 @@ DefenceR 에서 옮겨 올 때 **11개는 남겨야 했다.** 다시 조사하�
 | `Button_TextLocal` · `Image_AutoSizeTextLocal` · `Image_TextLocal` · `Outline_TextLocal` · `ToastBig_Local` | I2 Localization (서드파티 에셋) | 없다 |
 | `SpawnHero` · `Text_Quantum` | 그 게임 전용 스크립트 | 없다 |
 | `RawImage_Mask` | Photon 에 묶인 `RawImageUI` | 없다 |
-| `Toast` | `board_alarm_128`(부드럽게 번진 판) | 그 그림을 공용으로 올리면 |
+| `Toast` | — | **풀렸다.** 막던 그림이 `CapsuleSoft`로 들어왔다. 옮기는 건 아직 |
+| `Toggle` | 회색 버튼 판 · 노란 별 | 그 게임 그림이라 없다 |
 | `HeroLevelRow` | 묘비·명패·자물쇠 그림 | 그 게임 그림이라 없다. 쓰는 곳도 0 |
 
-**`Gage` 와 `Image_GridText` 는 풀려서 들어왔다**(2026-09-21). 둘 다 흰 판 하나(`round_128`)만
+**`Gage` 와 `Image_GridText` 는 풀려서 들어왔다**(2026-09-21). 둘 다 흰 판 하나(`Capsule`)만
 물고 있었고, 그 판이 공용으로 올라오면서 막던 이유가 사라졌다.
 
 **유니티 내장 스프라이트로 갈아 끼우는 길은 답이 아니었다** — 실제로 바꿔 렌더해 보니

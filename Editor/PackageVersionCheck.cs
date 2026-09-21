@@ -62,7 +62,26 @@ namespace UnityTools.Editor
                 return;
             }
 
-            string loaded = $"{info.name} {info.version} · {Short(hash)}";
+            // **락이 말하는 것과 실제로 받아 둔 것은 다를 수 있다.** 2026-09-21에 DefenceR이
+            // 실제로 그랬다 — manifest만 깃으로 고치고 락은 "local"인 채라, 유니티는 계속 옛 판을
+            // 쓰는데 락만 읽는 쪽은 그 어긋남을 못 본다. 유니티는 **실제로 받아 둔 것**을 쓰므로
+            // "지금 무슨 코드가 도나"의 답은 그쪽이다.
+            string installed = InstalledHash(info.resolvedPath);
+
+            // 락에 해시가 없는 것도 어긋남이다 — 실제로는 받아 둔 게 있는데 락이 그걸 안 적고 있다.
+            if (installed != null &&
+                (string.IsNullOrEmpty(hash) || !hash.StartsWith(installed, StringComparison.OrdinalIgnoreCase)))
+            {
+                Debug.LogWarning($"{Tag} 락과 실제가 다릅니다 — 락에는 {Short(hash)}라 적혀 있는데 " +
+                                 $"실제로 받아 둔 것은 {installed}입니다. **도는 것은 실제 쪽입니다.**");
+            }
+
+            // 뒤처짐 판정의 기준은 실제로 받아 둔 것이다. 그걸 못 읽었으면 락으로 대신하되
+            // **대신했다고 적는다** — 무엇을 근거로 말하는지가 보여야 한다.
+            string basis = installed ?? hash;
+            string basisNote = installed != null ? "" : " (락 기준 — 받아 둔 것을 못 읽었습니다)";
+
+            string loaded = $"{info.name} {info.version} · {Short(basis)}{basisNote}";
 
             // `URL#태그`로 판을 못 박았으면 뒤처진 게 아니라 **그렇게 정한 것**이다. 원격 최신과
             // 다르다고 경고하면 그때부터 매번 헛경보가 뜬다.
@@ -77,9 +96,9 @@ namespace UnityTools.Editor
 
             string url = reference;
 
-            if (string.IsNullOrEmpty(url) || string.IsNullOrEmpty(hash))
+            if (string.IsNullOrEmpty(url) || string.IsNullOrEmpty(basis))
             {
-                Debug.LogWarning($"{Tag} {loaded} — 락에 주소나 해시가 없어 대조하지 못했습니다. " +
+                Debug.LogWarning($"{Tag} {loaded} — 주소나 해시가 없어 대조하지 못했습니다. " +
                                  "**최신이라는 뜻이 아닙니다.**");
                 return;
             }
@@ -93,7 +112,8 @@ namespace UnityTools.Editor
                 return;
             }
 
-            if (string.Equals(remote, hash, StringComparison.OrdinalIgnoreCase))
+            // 받아 둔 쪽은 12자리라 앞부분만 맞춰 본다.
+            if (remote.StartsWith(basis, StringComparison.OrdinalIgnoreCase))
             {
                 Debug.Log($"{Tag} {loaded} — 원격 최신과 같습니다.");
                 return;
@@ -132,6 +152,30 @@ namespace UnityTools.Editor
             var match = Regex.Match(entry, $"\"{name}\"\\s*:\\s*\"([^\"]*)\"");
 
             return match.Success ? match.Groups[1].Value : null;
+        }
+
+        /// <summary>
+        /// <b>실제로 받아 둔</b> 판의 해시. 유니티는 받은 것을
+        /// <c>Library/PackageCache/&lt;이름&gt;@&lt;해시 앞 12자리&gt;</c>에 풀어 두므로 폴더 이름에서 읽는다.
+        ///
+        /// 유니티 기능 이름을 짐작하지 않으려고 이 방법을 쓴다 — 폴더 이름은 눈으로 확인한 것이고
+        /// (2026-09-21에 `abb0619` · `f0abbeb` · `e45ac8c` 세 번 다 이 규칙이었다), 지어낸 API 이름은
+        /// 컴파일 전에는 맞는지 알 수 없다.
+        ///
+        /// 모양이 다르면 <b>지어내지 말고 null</b>을 준다 — 부르는 쪽이 "못 읽었다"고 적는다.
+        /// </summary>
+        private static string InstalledHash(string resolvedPath)
+        {
+            if (string.IsNullOrEmpty(resolvedPath)) return null;
+
+            string folder = Path.GetFileName(resolvedPath.TrimEnd('\\', '/'));
+            int at = folder.LastIndexOf('@');
+
+            if (at < 0) return null;
+
+            string tail = folder.Substring(at + 1);
+
+            return Regex.IsMatch(tail, "^[0-9a-f]{7,40}$") ? tail : null;
         }
 
         private static string Short(string hash) =>
