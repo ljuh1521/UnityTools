@@ -72,8 +72,9 @@ namespace UnityTools.Editor
             if (installed != null &&
                 (string.IsNullOrEmpty(hash) || !hash.StartsWith(installed, StringComparison.OrdinalIgnoreCase)))
             {
+                // 나란히 읽는 줄이라 **자릿수를 맞춘다** — 한쪽만 길면 눈으로 대조가 안 된다.
                 Debug.LogWarning($"{Tag} 락과 실제가 다릅니다 — 락에는 {Short(hash)}라 적혀 있는데 " +
-                                 $"실제로 받아 둔 것은 {installed}입니다. **도는 것은 실제 쪽입니다.**");
+                                 $"실제로 받아 둔 것은 {Short(installed)}입니다. **도는 것은 실제 쪽입니다.**");
             }
 
             // 뒤처짐 판정의 기준은 실제로 받아 둔 것이다. 그걸 못 읽었으면 락으로 대신하되
