@@ -46,9 +46,7 @@ namespace UnityTools.Editor
 
                     effectOn++;
 
-                    var target = button.pressScaleTarget != null ? button.pressScaleTarget : button.transform;
-
-                    if (target is not RectTransform rect || rect.parent == null) continue;
+                    if (button.transform is not RectTransform rect || rect.parent == null) continue;
 
                     if (!rect.parent.TryGetComponent<LayoutGroup>(out var group) || !group.enabled) continue;
 

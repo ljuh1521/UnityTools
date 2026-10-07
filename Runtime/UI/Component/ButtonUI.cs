@@ -50,9 +50,6 @@ namespace UnityTools.UI
 
         [Min(0f)] public float pressEffectTime = 0.08f;
 
-        // 비우면 버튼 자신. 카드처럼 ButtonUI가 안쪽 자식인데 바깥 전체가 눌려야 할 때 지정한다.
-        public Transform pressScaleTarget;
-
         [Header("Info")]
         public Button.ButtonClickedEvent onClick;
         public Button.ButtonClickedEvent onPointerDown;
@@ -239,6 +236,14 @@ namespace UnityTools.UI
         private bool _movesPosition;
         private Vector3 _basePosition;
         private Vector3 _lastWrittenPosition;
+
+        // 버튼이 줄면 누르는 판정도 같이 준다. 그러면 가장자리를 누른 손가락이 판정 밖으로 빠져
+        // 누르는 중에 연출이 풀리고, 빨리 떼면 클릭을 놓친다(뗀 자리에 버튼이 없어서) — DefenceR 이
+        // 쓰는 StandaloneInputModule 코드로 확인했다(2026-10-07). 주 그림의 판정만 줄어든 만큼 넓혀
+        // 원래 자리를 덮게 한다.
+        private UnityEngine.UI.Graphic _hitGraphic;
+        private Vector4 _basePadding;
+        private Vector4 _lastWrittenPadding;
         private float _t;                    // 0 = 원래 크기, 1 = 눌린 크기
         private bool _held;
         private PointerEventData _pressData;
@@ -247,9 +252,9 @@ namespace UnityTools.UI
         {
             if (!pressEffectEnabled || !Application.isPlaying) return;
 
-            var target = pressScaleTarget != null ? pressScaleTarget : transform;
-
-            if (_pressed != null && _pressed != target) RestoreNow();
+            // 크기를 바꾸는 건 늘 버튼 자신이다. 바깥(카드 등)을 대신 누르게 하는 칸이 있었는데 쓰는
+            // 곳이 0이라 뺐다(2026-10-07) — 필요해지면 그때 근거와 함께 다시 넣는다.
+            var target = transform;
 
             // 되돌아가는 도중에 다시 누르면 기준을 다시 잡지 않는다 — 그때의 크기는 찌그러진
             // 중간값이라, 그걸 기준으로 삼으면 누를 때마다 조금씩 쪼그라든다.
@@ -262,6 +267,17 @@ namespace UnityTools.UI
                 _movesPosition = target is RectTransform rect && rect.rect.center.sqrMagnitude > 1e-8f;
                 _basePosition = target.localPosition;
                 _lastWrittenPosition = _basePosition;
+
+                _hitGraphic = button != null ? button.targetGraphic : null;
+
+                // 대상 바깥의 그림이면 같이 줄지 않으니 넓힐 이유가 없다.
+                if (_hitGraphic != null && !_hitGraphic.transform.IsChildOf(target)) _hitGraphic = null;
+
+                if (_hitGraphic != null)
+                {
+                    _basePadding = _hitGraphic.raycastPadding;
+                    _lastWrittenPadding = _basePadding;
+                }
                 _t = 0f;
             }
 
@@ -312,6 +328,54 @@ namespace UnityTools.UI
             _lastWritten = scale;
 
             if (_movesPosition) KeepCenter(scale);
+
+            if (_hitGraphic != null) KeepHitArea(scale);
+        }
+
+        // 판정을 원래 자리로 되돌린다. 대상 안에서 본 원래 판정 사각형을, 대상이 줄어든 비율의
+        // 거꾸로(원래 크기 ÷ 지금 크기)만큼 가운데 기준으로 키우면 줄어든 뒤에도 원래 자리를 덮는다
+        // — 가운데를 지키려 옮긴 위치까지 이 식에 들어 있다. 그걸 그림 자신의 좌표로 돌려 판정
+        // 여백(raycastPadding, 음수면 넓힘)으로 넣는다.
+        private void KeepHitArea(Vector3 scale)
+        {
+            if (_hitGraphic.raycastPadding != _lastWrittenPadding) _basePadding = _hitGraphic.raycastPadding;
+
+            // 다 돌아왔으면 계산하지 않고 원래 값을 그대로 넣는다 — 좌표를 오가며 생기는 아주 작은
+            // 오차가 여백에 남지 않게.
+            if (_t <= 0f)
+            {
+                _hitGraphic.raycastPadding = _basePadding;
+                _lastWrittenPadding = _basePadding;
+                return;
+            }
+
+            if (Mathf.Approximately(scale.x, 0f) || Mathf.Approximately(scale.y, 0f)) return;
+
+            var g = _hitGraphic.rectTransform;
+            var rect = g.rect;
+            var center = _pressed is RectTransform target ? (Vector3)target.rect.center : Vector3.zero;
+            var grow = new Vector3(_baseScale.x / scale.x, _baseScale.y / scale.y, 1f);
+
+            // 원래 판정 = 그림 사각형에서 원래 여백만큼 안으로 들인 것
+            var from = new Vector2(rect.xMin + _basePadding.x, rect.yMin + _basePadding.y);
+            var to = new Vector2(rect.xMax - _basePadding.z, rect.yMax - _basePadding.w);
+
+            Vector3 Map(Vector2 local)
+            {
+                var inTarget = _pressed.InverseTransformPoint(g.TransformPoint(local));
+                var grown = center + Vector3.Scale(grow, inTarget - center);
+                return g.InverseTransformPoint(_pressed.TransformPoint(grown));
+            }
+
+            var a = Map(from);
+            var b = Map(to);
+            var lo = Vector2.Min(a, b);
+            var hi = Vector2.Max(a, b);
+
+            var padding = new Vector4(lo.x - rect.xMin, lo.y - rect.yMin, rect.xMax - hi.x, rect.yMax - hi.y);
+
+            _hitGraphic.raycastPadding = padding;
+            _lastWrittenPadding = padding;
         }
 
         // 크기는 기준점 둘레로 바뀌므로, 기준점이 가운데가 아니면 버튼이 한쪽으로 쏠린다(닫기 버튼처럼
@@ -345,6 +409,9 @@ namespace UnityTools.UI
 
                 if (_movesPosition && _pressed.localPosition == _lastWrittenPosition)
                     _pressed.localPosition = _basePosition;
+
+                if (_hitGraphic != null && _hitGraphic.raycastPadding == _lastWrittenPadding)
+                    _hitGraphic.raycastPadding = _basePadding;
             }
 
             Clear();
@@ -355,6 +422,7 @@ namespace UnityTools.UI
             _press = null;
             _pressed = null;
             _movesPosition = false;
+            _hitGraphic = null;
             _held = false;
             _pressData = null;
             _t = 0f;
