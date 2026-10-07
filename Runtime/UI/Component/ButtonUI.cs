@@ -337,13 +337,13 @@ namespace UnityTools.UI
 
             // 누르는 동안 다른 코드가 크기를 새로 넣었으면(ItemUI가 칸 크기를 다시 맞출 때) 그걸
             // 새 기준으로 삼는다. 안 그러면 뗄 때 옛 크기로 되돌려 그 값을 지운다.
-            if (_pressed.localScale != _lastWritten) _baseScale = _pressed.localScale;
+            if (Moved(_pressed.localScale, _lastWritten, ScaleTolerance)) _baseScale = _pressed.localScale;
 
             var factor = Vector2.LerpUnclamped(Vector2.one, pressedScale, Mathf.SmoothStep(0f, 1f, _t));
             var scale = new Vector3(_baseScale.x * factor.x, _baseScale.y * factor.y, _baseScale.z);
 
             _pressed.localScale = scale;
-            _lastWritten = scale;
+            _lastWritten = _pressed.localScale;   // 되읽은 값을 기억한다 — 같은 오차끼리 비교하게
 
             if (_movesPosition) KeepCenter(scale);
 
@@ -359,7 +359,8 @@ namespace UnityTools.UI
             // 다른 코드가 넣은 값이라도 **계산 불가 값(NaN·무한)은 받지 않는다.** NaN 은 무엇과도
             // "다르다"가 나와 기준으로 받아들여지고, 끝날 때 그대로 되돌려 넣어져 그 버튼은 영영 판정이
             // 깨진다(2026-10-07 코드 검토). 같은 이유로 아래에서 쓸 값도 걸러 낸다.
-            if (_hitGraphic.raycastPadding != _lastWrittenPadding && IsFinite(_hitGraphic.raycastPadding))
+            if (Moved(_hitGraphic.raycastPadding, _lastWrittenPadding, PositionTolerance) &&
+                IsFinite(_hitGraphic.raycastPadding))
                 _basePadding = _hitGraphic.raycastPadding;
 
             // 다 돌아왔으면 계산하지 않고 원래 값을 그대로 넣는다 — 좌표를 오가며 생기는 아주 작은
@@ -400,8 +401,31 @@ namespace UnityTools.UI
             if (!IsFinite(padding)) return;
 
             _hitGraphic.raycastPadding = padding;
-            _lastWrittenPadding = padding;
+            _lastWrittenPadding = _hitGraphic.raycastPadding;
         }
+
+        // ── "다른 코드가 바꿨나" 판정 ───────────────────────────────────────────────
+        //
+        // 써 넣은 값을 다시 읽으면 소수 끝자리가 달라질 수 있다 — anchoredPosition 은 유니티가 부모
+        // 크기에서 그때그때 계산해 돌려주는 값이라, 부모 폭이 1017.1 처럼 딱 떨어지지 않으면 (-1.28,
+        // 1.28) 을 넣고 (-1.27999878, 1.2800293) 을 읽는다. 유니티 Vector2 == 의 허용치(약 1e-5)보다
+        // 크다. 예전엔 그 차이를 "남이 바꿨다"로 읽어 **매 프레임 내 값을 기준으로 받아들였고, 보정이
+        // 쌓여** 기준점 (1,1) 버튼이 눌릴 때마다 왼쪽 위로 밀려 그대로 남았다(2026-10-07 DefenceR 시너지
+        // 각성 닫기 버튼, 그쪽에서 프레임별로 재서 찾음). 0.22.0 에서 localPosition 을 anchoredPosition
+        // 으로 바꾸며 생긴 회귀다 — localPosition 은 저장된 값이라 되읽어도 같았다.
+        //
+        // 그래서 둘을 같이 쓴다: 써 넣은 뒤 **되읽은 값을 기억**하고(같은 오차끼리 비교), **허용치를 넉넉히**
+        // 둔다(부모 크기가 바뀔 때 다시 계산되며 생기는 오차까지). 남의 코드가 자리·여백을 정말 바꾸면
+        // 이보다 훨씬 크게 바꾼다. 크기는 배율이라 허용치를 더 작게 둔다.
+        private const float PositionTolerance = 0.01f;
+        private const float ScaleTolerance = 0.0001f;
+
+        // Vector2 는 Vector3·Vector4 둘 다로 바뀔 수 있어 따로 두지 않으면 어느 쪽인지 모호하다(컴파일 오류).
+        private static bool Moved(Vector2 a, Vector2 b, float tolerance) => (a - b).sqrMagnitude > tolerance * tolerance;
+
+        private static bool Moved(Vector3 a, Vector3 b, float tolerance) => (a - b).sqrMagnitude > tolerance * tolerance;
+
+        private static bool Moved(Vector4 a, Vector4 b, float tolerance) => (a - b).sqrMagnitude > tolerance * tolerance;
 
         private static bool IsFinite(Vector4 v) =>
             float.IsFinite(v.x) && float.IsFinite(v.y) && float.IsFinite(v.z) && float.IsFinite(v.w);
@@ -418,7 +442,7 @@ namespace UnityTools.UI
         {
             var rect = (RectTransform)_pressed;
 
-            if (rect.anchoredPosition != _lastWrittenPosition) _basePosition = rect.anchoredPosition;
+            if (Moved(rect.anchoredPosition, _lastWrittenPosition, PositionTolerance)) _basePosition = rect.anchoredPosition;
 
             // 부모 안에서 옮길 양. anchoredPosition 과 localPosition 은 x·y 가 같은 양만큼 움직이므로
             // 이 식의 결과를 그대로 더하면 된다.
@@ -427,7 +451,7 @@ namespace UnityTools.UI
             var position = _basePosition + (Vector2)(rect.localRotation * shrink);
 
             rect.anchoredPosition = position;
-            _lastWrittenPosition = position;
+            _lastWrittenPosition = rect.anchoredPosition;   // 되읽은 값 — 아래 Moved 의 설명 참고
         }
 
         private void RestoreNow()
@@ -437,12 +461,14 @@ namespace UnityTools.UI
             // 다른 코드가 새로 넣은 값이면 그대로 둔다 — 그게 지금의 원래 크기·자리다.
             if (_pressed != null)
             {
-                if (_pressed.localScale == _lastWritten) _pressed.localScale = _baseScale;
+                if (!Moved(_pressed.localScale, _lastWritten, ScaleTolerance)) _pressed.localScale = _baseScale;
 
-                if (_movesPosition && ((RectTransform)_pressed).anchoredPosition == _lastWrittenPosition)
+                if (_movesPosition &&
+                    !Moved(((RectTransform)_pressed).anchoredPosition, _lastWrittenPosition, PositionTolerance))
                     ((RectTransform)_pressed).anchoredPosition = _basePosition;
 
-                if (_hitGraphic != null && _hitGraphic.raycastPadding == _lastWrittenPadding)
+                if (_hitGraphic != null &&
+                    !Moved(_hitGraphic.raycastPadding, _lastWrittenPadding, PositionTolerance))
                     _hitGraphic.raycastPadding = _basePadding;
             }
 
