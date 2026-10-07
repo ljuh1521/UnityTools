@@ -47,11 +47,22 @@ namespace UnityTools.Editor
     [InitializeOnLoad]
     public static class AgentBridge
     {
+        // ── 상태를 어디에 두나 ──────────────────────────────────────────────────────
+        //
+        // **진행 상태(남은 명령·기다림·컴파일 감시·배치 이름·콘솔 수집)는 SessionState 에 둔다.**
+        // 이 편집기 하나 안에서만 살고, 도메인 리로드(refresh·play)는 넘긴다. 예전에는 EditorPrefs 에
+        // 뒀는데 그건 **컴퓨터 전체에 한 벌**이라, DefenceR 과 SDK Host 처럼 편집기 둘을 같이 켜면
+        // 한쪽이 배치를 끝내며 다른 쪽 콘솔 수집을 끄거나 남의 컴파일 감시를 지울 수 있었다. 기다림
+        // 마감 시각도 편집기마다 다른 시계 기준인데 서로 비교됐다(2026-10-07 코드 검토).
+        // 대신 편집기를 껐다 켜면 하던 배치는 사라진다 — 새 편집기가 옛 배치를 이어받는 것보다 낫다.
+        //
+        // **켜고 끄는 스위치만 EditorPrefs 에, 프로젝트마다 따로 둔다** — 편집기를 껐다 켜도 남아야 하고,
+        // 한 프로젝트에서 켰다고 다른 프로젝트에서도 켜지면 안 된다.
         private const string EnabledKey = "UnityTools.AgentBridge.Enabled";
         private const string PendingKey = "UnityTools.AgentBridge.Pending";
         private const string WaitKey = "UnityTools.AgentBridge.WaitUntil";
 
-        // refresh·recompile이 컴파일을 실제로 걸었는지 세는 자리. 도메인 리로드를 넘겨야 해서 EditorPrefs에 둔다.
+        // refresh·recompile이 컴파일을 실제로 걸었는지 세는 자리. 도메인 리로드를 넘겨야 해서 SessionState에 둔다.
         private const string WatchKey = "UnityTools.AgentBridge.WatchCompile";
         private const string CompiledKey = "UnityTools.AgentBridge.CompiledCount";
         private const string SeenKey = "UnityTools.AgentBridge.CompileSeen";
@@ -131,25 +142,37 @@ namespace UnityTools.Editor
             Extra[command] = handler;
         }
 
+        // 프로젝트 폴더로 구분한다. 같은 컴퓨터의 다른 프로젝트·복제본(ParrelSync 등)과 안 섞인다.
+        private static string ProjectEnabledKey =>
+            EnabledKey + "." + Path.GetDirectoryName(Application.dataPath)?.Replace('\\', '/');
+
         private static bool Enabled
         {
-            get => EditorPrefs.GetBool(EnabledKey, false);
-            set => EditorPrefs.SetBool(EnabledKey, value);
+            get
+            {
+                // 프로젝트별로 나누기 전에 켜 둔 사람은 그대로 켜진 채로 둔다 — 안 그러면 판을 올리는
+                // 순간 브릿지가 조용히 꺼져, 그걸 쓰던 자동 작업이 영문도 모른 채 멈춘다.
+                if (!EditorPrefs.HasKey(ProjectEnabledKey))
+                    EditorPrefs.SetBool(ProjectEnabledKey, EditorPrefs.GetBool(EnabledKey, false));
+
+                return EditorPrefs.GetBool(ProjectEnabledKey, false);
+            }
+            set => EditorPrefs.SetBool(ProjectEnabledKey, value);
         }
 
-        /// <summary>컴파일 때문에 미뤄 둔 명령. 도메인 리로드를 넘겨야 해서 EditorPrefs에 둔다.</summary>
+        /// <summary>컴파일 때문에 미뤄 둔 명령. 도메인 리로드를 넘겨야 해서 SessionState에 둔다.</summary>
         private static string Pending
         {
-            get => EditorPrefs.GetString(PendingKey, string.Empty);
-            set => EditorPrefs.SetString(PendingKey, value);
+            get => SessionState.GetString(PendingKey, string.Empty);
+            set => SessionState.SetString(PendingKey, value);
         }
 
         /// <summary>이 시각까지는 다음 명령을 미룬다. 로딩·연출을 기다릴 때 쓴다.</summary>
         private static double WaitUntil
         {
-            get => double.TryParse(EditorPrefs.GetString(WaitKey, "0"),
+            get => double.TryParse(SessionState.GetString(WaitKey, "0"),
                 NumberStyles.Float, CultureInfo.InvariantCulture, out double value) ? value : 0;
-            set => EditorPrefs.SetString(WaitKey, value.ToString(CultureInfo.InvariantCulture));
+            set => SessionState.SetString(WaitKey, value.ToString(CultureInfo.InvariantCulture));
         }
 
         /// <summary>
@@ -158,15 +181,15 @@ namespace UnityTools.Editor
         /// </summary>
         private static bool WatchingCompile
         {
-            get => EditorPrefs.GetBool(WatchKey, false);
-            set => EditorPrefs.SetBool(WatchKey, value);
+            get => SessionState.GetBool(WatchKey, false);
+            set => SessionState.SetBool(WatchKey, value);
         }
 
         /// <summary>지켜보기 시작한 뒤 실제로 다시 만들어진 어셈블리 수.</summary>
         private static int CompiledCount
         {
-            get => EditorPrefs.GetInt(CompiledKey, 0);
-            set => EditorPrefs.SetInt(CompiledKey, value);
+            get => SessionState.GetInt(CompiledKey, 0);
+            set => SessionState.SetInt(CompiledKey, value);
         }
 
         /// <summary>
@@ -179,8 +202,8 @@ namespace UnityTools.Editor
         /// </summary>
         private static bool CompileSeen
         {
-            get => EditorPrefs.GetBool(SeenKey, false);
-            set => EditorPrefs.SetBool(SeenKey, value);
+            get => SessionState.GetBool(SeenKey, false);
+            set => SessionState.SetBool(SeenKey, value);
         }
 
         /// <summary>
@@ -193,8 +216,8 @@ namespace UnityTools.Editor
         /// </summary>
         private static string BatchId
         {
-            get => EditorPrefs.GetString(IdKey, string.Empty);
-            set => EditorPrefs.SetString(IdKey, value ?? string.Empty);
+            get => SessionState.GetString(IdKey, string.Empty);
+            set => SessionState.SetString(IdKey, value ?? string.Empty);
         }
 
         /// <summary>
@@ -203,16 +226,16 @@ namespace UnityTools.Editor
         /// </summary>
         private static bool BatchActive
         {
-            get => EditorPrefs.GetBool(ActiveKey, false);
-            set => EditorPrefs.SetBool(ActiveKey, value);
+            get => SessionState.GetBool(ActiveKey, false);
+            set => SessionState.SetBool(ActiveKey, value);
         }
 
         /// <summary>이 시각까지는 "컴파일이 안 걸렸다"고 판정하지 않는다.</summary>
         private static double CompileDeadline
         {
-            get => double.TryParse(EditorPrefs.GetString(DeadlineKey, "0"),
+            get => double.TryParse(SessionState.GetString(DeadlineKey, "0"),
                 NumberStyles.Float, CultureInfo.InvariantCulture, out double value) ? value : 0;
-            set => EditorPrefs.SetString(DeadlineKey, value.ToString(CultureInfo.InvariantCulture));
+            set => SessionState.SetString(DeadlineKey, value.ToString(CultureInfo.InvariantCulture));
         }
 
         private const string ToggleMenu = UnityToolsMenu.Root + "에이전트 브릿지";

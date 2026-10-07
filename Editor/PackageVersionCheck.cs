@@ -185,62 +185,22 @@ namespace UnityTools.Editor
         /// <summary>원격 기본 가지의 최신 커밋. 못 물어봤으면 null과 이유를 준다.</summary>
         private static string RemoteHead(string url, out string failure)
         {
-            failure = null;
+            // 자격 증명 도우미를 이 호출에서만 끈다 — 공개 저장소는 필요 없고, 비공개면 로그인 창을
+            // 띄우는 대신 바로 실패하게 한다(2026-10-07 확인: 없는 저장소가 창 없이 0초에 실패했다).
+            // 그래도 멎는 경우는 GitRun 의 제한 시간이 막는다.
+            if (!GitRun.Run($"-c credential.helper= ls-remote \"{url}\" HEAD", null, RemoteTimeoutMs,
+                    out string output, out failure))
+                return null;
 
-            try
+            var match = Regex.Match(output, @"^([0-9a-f]{40})\s");
+
+            if (!match.Success)
             {
-                var start = new System.Diagnostics.ProcessStartInfo("git", $"ls-remote \"{url}\" HEAD")
-                {
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                };
-
-                // 비공개 저장소면 git이 아이디·비밀번호를 물으며 멎는다. 물어보지 말고 실패하게 한다 —
-                // 검사가 사람을 기다리는 물건이 되면 안 된다.
-                start.EnvironmentVariables["GIT_TERMINAL_PROMPT"] = "0";
-
-                using var process = System.Diagnostics.Process.Start(start);
-
-                if (process == null)
-                {
-                    failure = "git을 실행하지 못했습니다";
-                    return null;
-                }
-
-                string output = process.StandardOutput.ReadToEnd();
-
-                if (!process.WaitForExit(RemoteTimeoutMs))
-                {
-                    // 자격 증명 창을 기다리느라 멎는 경우가 있다. 검사가 거기 매달리면 안 된다.
-                    try { process.Kill(); } catch { /* 이미 끝났으면 그만이다 */ }
-
-                    failure = $"{RemoteTimeoutMs / 1000}초 안에 답이 없었습니다";
-                    return null;
-                }
-
-                if (process.ExitCode != 0)
-                {
-                    failure = "git ls-remote가 실패했습니다(오프라인이거나 접근 권한이 없습니다)";
-                    return null;
-                }
-
-                var match = Regex.Match(output, @"^([0-9a-f]{40})\s");
-
-                if (!match.Success)
-                {
-                    failure = "git 답에서 해시를 못 읽었습니다";
-                    return null;
-                }
-
-                return match.Groups[1].Value;
-            }
-            catch (Exception e)
-            {
-                failure = e.Message;
+                failure = "git 답에서 해시를 못 읽었습니다";
                 return null;
             }
+
+            return match.Groups[1].Value;
         }
     }
 }

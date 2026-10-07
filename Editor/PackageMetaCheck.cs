@@ -121,55 +121,28 @@ namespace UnityTools.Editor
                 return found;
             }
 
-            try
+            // **git 이 실패하면 "깨끗하다"가 아니라 "못 봤다"로 적는다.** 예전에는 종료 코드를 안 봐서,
+            // git 이 거부해 출력이 비면 진짜 깨끗할 때와 똑같은 "이상 없음"이 나왔다(2026-10-07 코드
+            // 검토) — 바로 이 저장소 점검표의 "죽은 것과 깨끗한 것이 구분되나"에 걸리는 꼴이었다.
+            if (!GitRun.Run("status --porcelain --untracked-files=all", root, 5000,
+                    out string output, out string failure))
             {
-                var start = new System.Diagnostics.ProcessStartInfo("git", "status --porcelain --untracked-files=all")
-                {
-                    WorkingDirectory = root,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                };
-
-                using var process = System.Diagnostics.Process.Start(start);
-
-                if (process == null)
-                {
-                    note = " · git을 실행하지 못해 커밋 여부는 못 봤습니다";
-                    return found;
-                }
-
-                string output = process.StandardOutput.ReadToEnd();
-
-                if (!process.WaitForExit(5000))
-                {
-                    try { process.Kill(); } catch { /* 이미 끝났으면 그만이다 */ }
-
-                    note = " · git이 답하지 않아 커밋 여부는 못 봤습니다";
-                    return found;
-                }
-
-                foreach (string line in output.Split('\n'))
-                {
-                    // `?? 경로` — 추적되지 않는 것만 본다. 고쳐 놓고 커밋 안 한 것(` M`)은 여기 관심사가
-                    // 아니다(그건 사람이 아는 상태다). 없는 파일이 조용히 빠지는 것만 잡는다.
-                    if (!line.StartsWith("?? ", StringComparison.Ordinal)) continue;
-
-                    string path = line.Substring(3).Trim().Trim('"');
-
-                    found.Add(path);
-                }
-
-                note = "";
-
+                note = $" · 커밋 여부는 못 봤습니다({failure})";
                 return found;
             }
-            catch (Exception e)
+
+            foreach (string line in output.Split('\n'))
             {
-                note = $" · 커밋 여부는 못 봤습니다({e.Message})";
-                return found;
+                // `?? 경로` — 추적되지 않는 것만 본다. 고쳐 놓고 커밋 안 한 것(` M`)은 여기 관심사가
+                // 아니다(그건 사람이 아는 상태다). 없는 파일이 조용히 빠지는 것만 잡는다.
+                if (!line.StartsWith("?? ", StringComparison.Ordinal)) continue;
+
+                found.Add(line.Substring(3).Trim().Trim('"'));
             }
+
+            note = "";
+
+            return found;
         }
     }
 }

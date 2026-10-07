@@ -202,7 +202,12 @@ namespace UnityTools.UI
 
             // SetPressable이 "지금 누를 수 있는가"를 button.interactable에 써 둔다 — 그걸 안 보면
             // 재료 부족처럼 꺼둔 버튼도 눌림 연출과 onPointerDown이 그대로 나간다(2026-09-11 코드 리뷰).
-            if (button != null && !button.interactable) return;
+            //
+            // interactable 하나만 보면 안 된다 — IsEnable=false(유니티 Button 컴포넌트를 끔)나 부모
+            // CanvasGroup 비활성으로 막은 버튼은 그 값이 그대로 true 라서, 눌러도 아무 일도 안 일어나는데
+            // 찌그러지기만 했다(2026-10-07 코드 검토 — DefenceR 최대 레벨 레벨업 버튼 등). 유니티가
+            // 실제로 클릭을 받는지와 같은 기준으로 본다.
+            if (button != null && !(button.isActiveAndEnabled && button.IsInteractable())) return;
 
             BeginPress(eventData);
 
