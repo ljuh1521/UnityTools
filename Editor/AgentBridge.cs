@@ -630,9 +630,11 @@ namespace UnityTools.Editor
                 Directory.CreateDirectory(Root);
                 File.AppendAllText(ConsoleFile, head + condition + Environment.NewLine, Encoding.UTF8);
             }
-            catch (IOException)
+            catch (Exception)
             {
                 // 로그를 적다 실패했다고 브릿지가 멈추면 안 된다. 그 줄만 버린다.
+                // IOException 만 잡으면 권한 오류(UnauthorizedAccessException) 같은 것이 그대로 새어
+                // 나간다 — 이 처리기는 유니티 로그 콜백이라 거기서 터지면 다른 로그 처리까지 흔든다.
             }
         }
 
@@ -667,9 +669,12 @@ namespace UnityTools.Editor
                                   $"({string.Join(", ", stale.Take(3))}{(stale.Count > 3 ? " 외" : "")}). " +
                                   "recompile을 먼저 넣지 않으면 옛 코드가 실행됩니다.");
             }
-            catch (IOException)
+            catch (Exception e)
             {
-                // 못 읽었다고 배치를 막을 일은 아니다.
+                // 못 읽었다고 배치를 막을 일은 아니다. 다만 **이 함수는 try 밖에서 불린다** — 여기서
+                // 예외가 새면 요청 파일만 지워진 채 응답 없이 배치가 사라진다(2026-10-07 코드 검토).
+                // 그래서 무엇이든 잡고, 못 봤다는 것은 남긴다.
+                report.AppendLine($"   (옛 코드인지 확인하지 못했습니다: {e.GetType().Name})");
             }
         }
 
@@ -805,10 +810,11 @@ namespace UnityTools.Editor
                 // 잘린 것을 말하지 않으면 "이게 전부"로 읽힌다.
                 if (cut) report.AppendLine($"  … 로그가 {ConsoleLimit / 1024}KB를 넘어 이후는 안 받았습니다.");
             }
-            catch (IOException)
+            catch (Exception e)
             {
+                // 여기서 새면 응답 파일 자체가 안 써져 배치가 조용히 사라진다. 무엇이든 잡고 적는다.
                 report.AppendLine();
-                report.AppendLine("# 콘솔 — 읽지 못했습니다(파일이 잠겨 있었습니다).");
+                report.AppendLine($"# 콘솔 — 읽지 못했습니다({e.GetType().Name}).");
             }
         }
 

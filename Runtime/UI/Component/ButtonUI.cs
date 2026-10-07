@@ -238,9 +238,13 @@ namespace UnityTools.UI
         // 기준점이 가운데가 아닐 때만 쓴다 — 가운데면 위치를 아예 건드리지 않는다(줄 맞춤 부품이
         // 정한 자리와 싸우지 않게). 누르는 동안 다른 코드가 위치를 바꾸면 그걸 새 기준으로 삼는 건
         // 크기와 같다.
+        //
+        // 자리는 localPosition 이 아니라 **anchoredPosition** 으로 잰다. localPosition 은 부모 크기가
+        // 바뀌면 같이 바뀌어서, 누른 사이 부모가 커지거나 줄면 그걸 "다른 코드가 넣은 값"으로 받아들여
+        // 보정분이 섞인 채 기준이 됐다 — 떼고 나서도 밀린 채 남았다(2026-10-07 코드 검토).
         private bool _movesPosition;
-        private Vector3 _basePosition;
-        private Vector3 _lastWrittenPosition;
+        private Vector2 _basePosition;
+        private Vector2 _lastWrittenPosition;
 
         // 버튼이 줄면 누르는 판정도 같이 준다. 그러면 가장자리를 누른 손가락이 판정 밖으로 빠져
         // 누르는 중에 연출이 풀리고, 빨리 떼면 클릭을 놓친다(뗀 자리에 버튼이 없어서) — DefenceR 이
@@ -252,6 +256,7 @@ namespace UnityTools.UI
         private float _t;                    // 0 = 원래 크기, 1 = 눌린 크기
         private bool _held;
         private PointerEventData _pressData;
+        private int _tickFrame;              // 루틴이 마지막으로 돈 프레임 — 살아 있는지 가늠한다
 
         private void BeginPress(PointerEventData data)
         {
@@ -270,7 +275,7 @@ namespace UnityTools.UI
                 _lastWritten = _baseScale;
 
                 _movesPosition = target is RectTransform rect && rect.rect.center.sqrMagnitude > 1e-8f;
-                _basePosition = target.localPosition;
+                _basePosition = _movesPosition ? ((RectTransform)target).anchoredPosition : Vector2.zero;
                 _lastWrittenPosition = _basePosition;
 
                 _hitGraphic = button != null ? button.targetGraphic : null;
@@ -289,13 +294,21 @@ namespace UnityTools.UI
             _held = true;
             _pressData = data;
 
-            _press ??= StartCoroutine(Animate());
+            // 돌고 있는 루틴이 없으면 새로 띄운다. **손잡이만 보면 안 된다** — 누가 StopAllCoroutines 로
+            // 멈춘 루틴도 손잡이는 남아 있어서, 예전 코드에선 그 버튼이 찌그러진 채 남고 꺼졌다 켜질
+            // 때까지 다시는 연출이 안 됐다(2026-10-07 코드 검토, SDK Host 에서 재현). 지난 프레임에
+            // 돌았는지로 본다. (첫 걸음에서 바로 끝나는 루틴은 유니티가 손잡이를 null 로 돌려줘서 이
+            // 문제가 없다 — 같은 날 실측.)
+            if (_press == null || Time.frameCount - _tickFrame > 1)
+                _press = StartCoroutine(Animate());
         }
 
         private IEnumerator Animate()
         {
             while (true)
             {
+                _tickFrame = Time.frameCount;
+
                 // 누른 채 끌기 시작하면(목록 스크롤) 뗀 것으로 친다. 끌기 받는 인터페이스를 버튼에
                 // 붙이면 부모 ScrollRect가 받을 끌기를 버튼이 가로채 스크롤이 죽는다 — 그래서 붙이지
                 // 않고, 누른 동안 이쪽에서 "지금 끌고 있나"만 본다.
@@ -343,7 +356,11 @@ namespace UnityTools.UI
         // 여백(raycastPadding, 음수면 넓힘)으로 넣는다.
         private void KeepHitArea(Vector3 scale)
         {
-            if (_hitGraphic.raycastPadding != _lastWrittenPadding) _basePadding = _hitGraphic.raycastPadding;
+            // 다른 코드가 넣은 값이라도 **계산 불가 값(NaN·무한)은 받지 않는다.** NaN 은 무엇과도
+            // "다르다"가 나와 기준으로 받아들여지고, 끝날 때 그대로 되돌려 넣어져 그 버튼은 영영 판정이
+            // 깨진다(2026-10-07 코드 검토). 같은 이유로 아래에서 쓸 값도 걸러 낸다.
+            if (_hitGraphic.raycastPadding != _lastWrittenPadding && IsFinite(_hitGraphic.raycastPadding))
+                _basePadding = _hitGraphic.raycastPadding;
 
             // 다 돌아왔으면 계산하지 않고 원래 값을 그대로 넣는다 — 좌표를 오가며 생기는 아주 작은
             // 오차가 여백에 남지 않게.
@@ -379,9 +396,15 @@ namespace UnityTools.UI
 
             var padding = new Vector4(lo.x - rect.xMin, lo.y - rect.yMin, rect.xMax - hi.x, rect.yMax - hi.y);
 
+            // 부모가 크기 0 이 되는 순간처럼 좌표를 되돌릴 수 없으면 이번 프레임은 건너뛴다.
+            if (!IsFinite(padding)) return;
+
             _hitGraphic.raycastPadding = padding;
             _lastWrittenPadding = padding;
         }
+
+        private static bool IsFinite(Vector4 v) =>
+            float.IsFinite(v.x) && float.IsFinite(v.y) && float.IsFinite(v.z) && float.IsFinite(v.w);
 
         // 크기는 기준점 둘레로 바뀌므로, 기준점이 가운데가 아니면 버튼이 한쪽으로 쏠린다(닫기 버튼처럼
         // 모서리에 붙여 두려고 기준점을 옮긴 버튼이 많다). **눈에 보이는 가운데**가 부모 기준으로 같은
@@ -393,13 +416,17 @@ namespace UnityTools.UI
         // 회전을 무시하면 반대쪽으로 밀린다.
         private void KeepCenter(Vector3 scale)
         {
-            if (_pressed.localPosition != _lastWrittenPosition) _basePosition = _pressed.localPosition;
+            var rect = (RectTransform)_pressed;
 
-            var center = (Vector3)((RectTransform)_pressed).rect.center;
+            if (rect.anchoredPosition != _lastWrittenPosition) _basePosition = rect.anchoredPosition;
+
+            // 부모 안에서 옮길 양. anchoredPosition 과 localPosition 은 x·y 가 같은 양만큼 움직이므로
+            // 이 식의 결과를 그대로 더하면 된다.
+            var center = (Vector3)rect.rect.center;
             var shrink = Vector3.Scale(_baseScale - scale, center);
-            var position = _basePosition + _pressed.localRotation * shrink;
+            var position = _basePosition + (Vector2)(rect.localRotation * shrink);
 
-            _pressed.localPosition = position;
+            rect.anchoredPosition = position;
             _lastWrittenPosition = position;
         }
 
@@ -412,8 +439,8 @@ namespace UnityTools.UI
             {
                 if (_pressed.localScale == _lastWritten) _pressed.localScale = _baseScale;
 
-                if (_movesPosition && _pressed.localPosition == _lastWrittenPosition)
-                    _pressed.localPosition = _basePosition;
+                if (_movesPosition && ((RectTransform)_pressed).anchoredPosition == _lastWrittenPosition)
+                    ((RectTransform)_pressed).anchoredPosition = _basePosition;
 
                 if (_hitGraphic != null && _hitGraphic.raycastPadding == _lastWrittenPadding)
                     _hitGraphic.raycastPadding = _basePadding;

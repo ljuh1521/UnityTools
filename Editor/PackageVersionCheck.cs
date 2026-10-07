@@ -86,16 +86,25 @@ namespace UnityTools.Editor
 
             // `URL#태그`로 판을 못 박았으면 뒤처진 게 아니라 **그렇게 정한 것**이다. 원격 최신과
             // 다르다고 경고하면 그때부터 매번 헛경보가 뜬다.
+            // 주소 뒤 `#…` 은 커밋일 수도, 태그·가지일 수도 있다. **커밋으로 못 박았으면** 그건 뒤처진 게
+            // 아니라 그렇게 정한 것이라 대조하지 않는다. **가지(#main 등)는 앞으로 나아가므로** 원격에서
+            // 그 이름이 지금 가리키는 커밋과 대조해야 한다 — 예전에는 `#` 만 보면 다 "못 박음"으로 보고
+            // 건너뛰어, 가지를 따라가다 뒤처져도 말하지 않았다(2026-10-07 코드 검토).
             int pin = reference?.IndexOf('#') ?? -1;
+            string fragment = pin >= 0 ? reference.Substring(pin + 1) : null;
 
-            if (pin >= 0)
+            if (fragment != null && Regex.IsMatch(fragment, "^[0-9a-fA-F]{7,40}$"))
             {
-                Debug.Log($"{Tag} {loaded} — {reference.Substring(pin + 1)}에 못 박혀 있습니다. " +
+                Debug.Log($"{Tag} {loaded} — 커밋 {Short(fragment)}에 못 박혀 있습니다. " +
                           "원격 최신과는 대조하지 않습니다.");
                 return;
             }
 
-            string url = reference;
+            // `?path=…`(하위 폴더 지정)와 `#…` 를 떼어 낸 저장소 주소.
+            string url = pin >= 0 ? reference.Substring(0, pin) : reference;
+            int query = url?.IndexOf('?') ?? -1;
+
+            if (query >= 0) url = url.Substring(0, query);
 
             if (string.IsNullOrEmpty(url) || string.IsNullOrEmpty(basis))
             {
@@ -104,7 +113,9 @@ namespace UnityTools.Editor
                 return;
             }
 
-            string remote = RemoteHead(url, out string failure);
+            string target = fragment ?? "HEAD";
+            string what = fragment != null ? $"원격의 {fragment}" : "원격 최신";
+            string remote = RemoteHead(url, target, out string failure);
 
             if (remote == null)
             {
@@ -116,11 +127,11 @@ namespace UnityTools.Editor
             // 받아 둔 쪽은 12자리라 앞부분만 맞춰 본다.
             if (remote.StartsWith(basis, StringComparison.OrdinalIgnoreCase))
             {
-                Debug.Log($"{Tag} {loaded} — 원격 최신과 같습니다.");
+                Debug.Log($"{Tag} {loaded} — {what}과 같습니다.");
                 return;
             }
 
-            Debug.LogWarning($"{Tag} {loaded} — **뒤처져 있습니다.** 원격 최신은 {Short(remote)}입니다.\n" +
+            Debug.LogWarning($"{Tag} {loaded} — **뒤처져 있습니다.** {what}은 {Short(remote)}입니다.\n" +
                              $"  받으려면 {LockFile}의 hash를 지우거나 원격 값으로 바꾼 뒤 패키지를 다시 풀어야 " +
                              "합니다(에셋 재임포트만으로는 안 됩니다).");
         }
@@ -128,13 +139,14 @@ namespace UnityTools.Editor
         /// <summary>락 파일에서 그 패키지 항목의 본문만 잘라낸다. 못 찾으면 null.</summary>
         private static string Entry(string json, string package)
         {
-            int at = json.IndexOf($"\"{package}\"", StringComparison.Ordinal);
+            // **이름 뒤에 `{` 가 오는 자리**만 그 패키지의 항목이다. 다른 패키지가 이걸 의존성으로 적은
+            // 자리는 `"이름": "판"` 꼴(뒤에 문자열)이라 걸리지 않는다. 처음 나오는 이름을 잡으면, 그런
+            // 패키지가 알파벳 순으로 앞에 올 때 엉뚱한 항목을 읽어 거짓 초록불이 났다(2026-10-07 코드 검토).
+            var key = Regex.Match(json, $"\"{Regex.Escape(package)}\"\\s*:\\s*\\{{");
 
-            if (at < 0) return null;
+            if (!key.Success) return null;
 
-            int open = json.IndexOf('{', at);
-
-            if (open < 0) return null;
+            int open = key.Index + key.Length - 1;
 
             // 항목 안에 중첩 객체(dependencies)가 있어 첫 `}`로 자르면 안 된다.
             int depth = 0;
@@ -183,24 +195,31 @@ namespace UnityTools.Editor
             string.IsNullOrEmpty(hash) ? "(해시 없음)" : hash.Substring(0, Math.Min(7, hash.Length));
 
         /// <summary>원격 기본 가지의 최신 커밋. 못 물어봤으면 null과 이유를 준다.</summary>
-        private static string RemoteHead(string url, out string failure)
+        /// <summary>원격에서 그 이름(HEAD · 가지 · 태그)이 지금 가리키는 커밋. 못 물어봤으면 null 과 이유.</summary>
+        private static string RemoteHead(string url, string reference, out string failure)
         {
             // 자격 증명 도우미를 이 호출에서만 끈다 — 공개 저장소는 필요 없고, 비공개면 로그인 창을
             // 띄우는 대신 바로 실패하게 한다(2026-10-07 확인: 없는 저장소가 창 없이 0초에 실패했다).
             // 그래도 멎는 경우는 GitRun 의 제한 시간이 막는다.
-            if (!GitRun.Run($"-c credential.helper= ls-remote \"{url}\" HEAD", null, RemoteTimeoutMs,
+            if (!GitRun.Run($"-c credential.helper= ls-remote \"{url}\" \"{reference}\"", null, RemoteTimeoutMs,
                     out string output, out failure))
                 return null;
 
-            var match = Regex.Match(output, @"^([0-9a-f]{40})\s");
+            // 주석 달린 태그는 태그 자신과 그것이 가리키는 커밋(`이름^{}`) 두 줄이 온다. 커밋 쪽을 쓴다.
+            var lines = Regex.Matches(output, @"^([0-9a-f]{40})\s+(\S+)", RegexOptions.Multiline);
 
-            if (!match.Success)
+            if (lines.Count == 0)
             {
-                failure = "git 답에서 해시를 못 읽었습니다";
+                failure = $"원격에 {reference}가 없습니다";
                 return null;
             }
 
-            return match.Groups[1].Value;
+            foreach (Match line in lines)
+            {
+                if (line.Groups[2].Value.EndsWith("^{}", StringComparison.Ordinal)) return line.Groups[1].Value;
+            }
+
+            return lines[0].Groups[1].Value;
         }
     }
 }
