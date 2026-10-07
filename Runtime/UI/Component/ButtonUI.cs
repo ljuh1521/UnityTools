@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using UnityEngine;
 using UnityEngine.Events;
 using UnityEngine.EventSystems;
@@ -10,7 +11,7 @@ namespace UnityTools.UI
     // ButtonOutlineShadowUI와 API가 중복돼 있던 걸 ButtonUI 하나로 합침). 프리팹에 "Outline"·
     // "Shadow" 자식이 없는 기존 버튼은 OutlineUI/OutlineShadowUI 쪽 가드 덕분에 전혀 영향 없다 —
     // 그 자식들을 나중에 추가하기만 하면 이 버튼도 테두리·그림자를 쓸 수 있다.
-    public class ButtonUI : OutlineShadowUI, IPointerDownHandler
+    public class ButtonUI : OutlineShadowUI, IPointerDownHandler, IPointerUpHandler, IPointerExitHandler
     {
         [Header("UI")]
         public Button button;
@@ -37,6 +38,20 @@ namespace UnityTools.UI
         // ⚠ 누른 결과는 프리팹에 저장되므로 확인이 끝나면 다시 켜고 한 번 더 누른다.
         public bool pressable = true;
         public Sprite disableSprite;
+
+        // 누르고 있는 동안 크기를 바꾸는 연출(2026-10-07, DefenceR 사용자 요청 — 모든 버튼에 기본으로).
+        // 화면 전체를 덮는 딤처럼 찌그러지면 안 되는 판은 이 칸을 끈다.
+        [Header("Press Effect")]
+        public bool pressEffectEnabled = true;
+
+        // 원래 크기에 곱하는 배율. 1이 아니라 **누른 순간의 크기**에 곱한다 — ItemUI처럼 버튼
+        // 크기를 코드가 정하는 곳이 있어서, 1로 되돌리면 그 값을 지운다.
+        public Vector2 pressedScale = new(0.8f, 1.2f);
+
+        [Min(0f)] public float pressEffectTime = 0.08f;
+
+        // 비우면 버튼 자신. 카드처럼 ButtonUI가 안쪽 자식인데 바깥 전체가 눌려야 할 때 지정한다.
+        public Transform pressScaleTarget;
 
         [Header("Info")]
         public Button.ButtonClickedEvent onClick;
@@ -192,7 +207,117 @@ namespace UnityTools.UI
             // 재료 부족처럼 꺼둔 버튼도 눌림 연출과 onPointerDown이 그대로 나간다(2026-09-11 코드 리뷰).
             if (button != null && !button.interactable) return;
 
+            BeginPress(eventData);
+
             onPointerDown?.Invoke();
+        }
+
+        public void OnPointerUp(PointerEventData eventData) => _held = false;
+
+        // 손가락이 버튼 밖으로 나가면 뗀 것으로 친다 — 다시 들어와도 다시 누르지 않는다.
+        public void OnPointerExit(PointerEventData eventData) => _held = false;
+
+        // 연출 도중 꺼지면 찌그러진 채 남는다 — 그 자리에서 원래 크기로 돌려놓는다.
+        // 컴포넌트만 끄면(enabled=false) 루틴이 저절로 안 멈추므로 여기서 멈춘다.
+        protected override void OnDisable()
+        {
+            base.OnDisable();
+
+            RestoreNow();
+        }
+
+        // ── 눌림 연출 ──────────────────────────────────────────────────────────────
+
+        private Coroutine _press;
+        private Transform _pressed;          // 지금 크기를 바꾸고 있는 대상. null이면 손대지 않은 상태
+        private Vector3 _baseScale;
+        private Vector3 _lastWritten;
+        private float _t;                    // 0 = 원래 크기, 1 = 눌린 크기
+        private bool _held;
+        private PointerEventData _pressData;
+
+        private void BeginPress(PointerEventData data)
+        {
+            if (!pressEffectEnabled || !Application.isPlaying) return;
+
+            var target = pressScaleTarget != null ? pressScaleTarget : transform;
+
+            if (_pressed != null && _pressed != target) RestoreNow();
+
+            // 되돌아가는 도중에 다시 누르면 기준을 다시 잡지 않는다 — 그때의 크기는 찌그러진
+            // 중간값이라, 그걸 기준으로 삼으면 누를 때마다 조금씩 쪼그라든다.
+            if (_pressed == null)
+            {
+                _pressed = target;
+                _baseScale = target.localScale;
+                _lastWritten = _baseScale;
+                _t = 0f;
+            }
+
+            _held = true;
+            _pressData = data;
+
+            _press ??= StartCoroutine(Animate());
+        }
+
+        private IEnumerator Animate()
+        {
+            while (true)
+            {
+                // 누른 채 끌기 시작하면(목록 스크롤) 뗀 것으로 친다. 끌기 받는 인터페이스를 버튼에
+                // 붙이면 부모 ScrollRect가 받을 끌기를 버튼이 가로채 스크롤이 죽는다 — 그래서 붙이지
+                // 않고, 누른 동안 이쪽에서 "지금 끌고 있나"만 본다.
+                if (_held && _pressData != null && _pressData.dragging) _held = false;
+
+                // 게임 시간을 멈춘 팝업 위에서도 눌려야 하므로 멈추지 않는 시간으로 센다.
+                float step = pressEffectTime > 0f ? Time.unscaledDeltaTime / pressEffectTime : 1f;
+
+                _t = Mathf.MoveTowards(_t, _held ? 1f : 0f, step);
+
+                Apply();
+
+                if (!_held && _t <= 0f)
+                {
+                    Clear();
+                    yield break;
+                }
+
+                yield return null;
+            }
+        }
+
+        private void Apply()
+        {
+            if (_pressed == null) return;
+
+            // 누르는 동안 다른 코드가 크기를 새로 넣었으면(ItemUI가 칸 크기를 다시 맞출 때) 그걸
+            // 새 기준으로 삼는다. 안 그러면 뗄 때 옛 크기로 되돌려 그 값을 지운다.
+            if (_pressed.localScale != _lastWritten) _baseScale = _pressed.localScale;
+
+            var factor = Vector2.LerpUnclamped(Vector2.one, pressedScale, Mathf.SmoothStep(0f, 1f, _t));
+            var scale = new Vector3(_baseScale.x * factor.x, _baseScale.y * factor.y, _baseScale.z);
+
+            _pressed.localScale = scale;
+            _lastWritten = scale;
+        }
+
+        private void RestoreNow()
+        {
+            if (_press != null) StopCoroutine(_press);
+
+            // 다른 코드가 새로 넣은 값이면 그대로 둔다 — 그게 지금의 원래 크기다.
+            if (_pressed != null && _pressed.localScale == _lastWritten) _pressed.localScale = _baseScale;
+
+            Clear();
+        }
+
+        private void Clear()
+        {
+            _press = null;
+            _pressed = null;
+            _held = false;
+            _pressData = null;
+            _t = 0f;
         }
 
         public void OnClick()
