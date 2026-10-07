@@ -232,6 +232,13 @@ namespace UnityTools.UI
         private Transform _pressed;          // 지금 크기를 바꾸고 있는 대상. null이면 손대지 않은 상태
         private Vector3 _baseScale;
         private Vector3 _lastWritten;
+
+        // 기준점이 가운데가 아닐 때만 쓴다 — 가운데면 위치를 아예 건드리지 않는다(줄 맞춤 부품이
+        // 정한 자리와 싸우지 않게). 누르는 동안 다른 코드가 위치를 바꾸면 그걸 새 기준으로 삼는 건
+        // 크기와 같다.
+        private bool _movesPosition;
+        private Vector3 _basePosition;
+        private Vector3 _lastWrittenPosition;
         private float _t;                    // 0 = 원래 크기, 1 = 눌린 크기
         private bool _held;
         private PointerEventData _pressData;
@@ -251,6 +258,10 @@ namespace UnityTools.UI
                 _pressed = target;
                 _baseScale = target.localScale;
                 _lastWritten = _baseScale;
+
+                _movesPosition = target is RectTransform rect && rect.rect.center.sqrMagnitude > 1e-8f;
+                _basePosition = target.localPosition;
+                _lastWrittenPosition = _basePosition;
                 _t = 0f;
             }
 
@@ -299,14 +310,42 @@ namespace UnityTools.UI
 
             _pressed.localScale = scale;
             _lastWritten = scale;
+
+            if (_movesPosition) KeepCenter(scale);
+        }
+
+        // 크기는 기준점 둘레로 바뀌므로, 기준점이 가운데가 아니면 버튼이 한쪽으로 쏠린다(닫기 버튼처럼
+        // 모서리에 붙여 두려고 기준점을 옮긴 버튼이 많다). **눈에 보이는 가운데**가 부모 기준으로 같은
+        // 자리에 있도록 위치를 그만큼 옮긴다.
+        //
+        // 가운데의 부모 기준 자리 = 위치 + 회전 × (크기 ⊙ 자기 안에서의 가운데). 크기가 바뀌어도 이게
+        // 같으려면 위치 = 원래 위치 + 회전 × ((원래 크기 − 지금 크기) ⊙ 가운데).
+        // **회전을 빼면 안 된다** — 왼쪽 화살표를 180도 돌려 오른쪽으로 쓰는 버튼이 실제로 있고,
+        // 회전을 무시하면 반대쪽으로 밀린다.
+        private void KeepCenter(Vector3 scale)
+        {
+            if (_pressed.localPosition != _lastWrittenPosition) _basePosition = _pressed.localPosition;
+
+            var center = (Vector3)((RectTransform)_pressed).rect.center;
+            var shrink = Vector3.Scale(_baseScale - scale, center);
+            var position = _basePosition + _pressed.localRotation * shrink;
+
+            _pressed.localPosition = position;
+            _lastWrittenPosition = position;
         }
 
         private void RestoreNow()
         {
             if (_press != null) StopCoroutine(_press);
 
-            // 다른 코드가 새로 넣은 값이면 그대로 둔다 — 그게 지금의 원래 크기다.
-            if (_pressed != null && _pressed.localScale == _lastWritten) _pressed.localScale = _baseScale;
+            // 다른 코드가 새로 넣은 값이면 그대로 둔다 — 그게 지금의 원래 크기·자리다.
+            if (_pressed != null)
+            {
+                if (_pressed.localScale == _lastWritten) _pressed.localScale = _baseScale;
+
+                if (_movesPosition && _pressed.localPosition == _lastWrittenPosition)
+                    _pressed.localPosition = _basePosition;
+            }
 
             Clear();
         }
@@ -315,6 +354,7 @@ namespace UnityTools.UI
         {
             _press = null;
             _pressed = null;
+            _movesPosition = false;
             _held = false;
             _pressData = null;
             _t = 0f;
