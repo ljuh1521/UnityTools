@@ -29,6 +29,8 @@ namespace UnityTools.Editor
     ///   Logs/Agent/request.txt   넣을 명령. 한 줄에 하나.
     ///   Logs/Agent/response.txt  실행 결과와 그동안의 콘솔 로그.
     ///   Logs/Agent/status.txt    살아 있는지 알리는 시각(켜져 있을 때만 갱신).
+    ///                            메뉴로 끄면 "off 시각"으로 바뀐다 — 시각이 멈춘 게 꺼서인지
+    ///                            에디터가 막혀서인지 밖에서 가를 수 있게. 켜면 바로 시각으로 덮인다.
     ///
     /// 명령:
     ///   refresh              에셋 다시 읽기(코드를 고쳤으면 이걸로 컴파일시킨다).
@@ -253,11 +255,14 @@ namespace UnityTools.Editor
 
             if (!Enabled)
             {
+                // 끄면 갱신만 멈춰서, 밖에서는 에디터가 큰 임포트로 막힌 것과 구분이 안 됐다.
+                WriteStatus("off ");
                 Debug.Log("[에이전트 브릿지] 껐습니다.");
                 return;
             }
 
-            Directory.CreateDirectory(Root);
+            // 다음 Poll 까지 기다리지 않고 바로 덮는다 — 옛 꺼짐 표시가 잠깐이라도 남지 않게.
+            WriteStatus();
 
             Debug.Log($"[에이전트 브릿지] 켰습니다. {RequestFile}에 명령을 넣으면 실행하고 " +
                       $"{ResponseFile}에 결과를 남깁니다.");
@@ -841,10 +846,10 @@ namespace UnityTools.Editor
             BatchActive = false;
         }
 
-        private static void WriteStatus()
+        private static void WriteStatus(string prefix = "")
         {
             Directory.CreateDirectory(Root);
-            File.WriteAllText(StatusFile, Stamp(), Encoding.UTF8);
+            File.WriteAllText(StatusFile, prefix + Stamp(), Encoding.UTF8);
         }
 
         /// <summary>넣는 쪽이 <c>id &lt;토큰&gt;</c>으로 이번 배치 이름을 정한다. 없으면 빈 문자열.</summary>
