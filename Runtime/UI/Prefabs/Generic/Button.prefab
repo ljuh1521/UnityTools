@@ -61,8 +61,8 @@ MonoBehaviour:
   outlineSize: 0
   outlineColor: {r: 1, g: 1, b: 1, a: 1}
   outlineEnabled: 0
-  shadowOffset: {x: 0, y: 0}
-  shadowColor: {r: 0, g: 0, b: 0, a: 1}
+  shadowOffset: {x: 0, y: -5}
+  shadowColor: {r: 0, g: 0, b: 0, a: 0.5}
   shadowEnabled: 0
   button: {fileID: 2027609294513442167}
   image: {fileID: 8378894676790867971}
@@ -295,6 +295,10 @@ PrefabInstance:
       value: 2
       objectReference: {fileID: 0}
     - target: {fileID: 2004560414556117525, guid: e94307e7605ba3041a975a4508d10f89, type: 3}
+      propertyPath: m_Color.a
+      value: 0.5
+      objectReference: {fileID: 0}
+    - target: {fileID: 2004560414556117525, guid: e94307e7605ba3041a975a4508d10f89, type: 3}
       propertyPath: m_Color.b
       value: 0
       objectReference: {fileID: 0}
@@ -380,7 +384,7 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: 6844366780254279603, guid: e94307e7605ba3041a975a4508d10f89, type: 3}
       propertyPath: m_AnchoredPosition.y
-      value: 0
+      value: -5
       objectReference: {fileID: 0}
     - target: {fileID: 6844366780254279603, guid: e94307e7605ba3041a975a4508d10f89, type: 3}
       propertyPath: m_LocalEulerAnglesHint.x

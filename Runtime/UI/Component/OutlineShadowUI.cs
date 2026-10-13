@@ -7,8 +7,8 @@ namespace UnityTools.UI
     public class OutlineShadowUI : OutlineUI
     {
         [Header("Shadow")]
-        public Vector2 shadowOffset;
-        public Color shadowColor = Color.black;
+        public Vector2 shadowOffset = new(0f, -5f);
+        public Color shadowColor = new(0f, 0f, 0f, 0.5f);
 
         // 그림자 기능 자체를 껐다 켰다 하는 스위치(ShadowUI.shadowEnabled와 같은 방식,
         // 2026-08-31 사용자 요청).
