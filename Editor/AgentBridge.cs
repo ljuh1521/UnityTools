@@ -31,6 +31,7 @@ namespace UnityTools.Editor
     ///   Logs/Agent/status.txt    살아 있는지 알리는 시각(켜져 있을 때만 갱신).
     ///                            메뉴로 끄면 "off 시각"으로 바뀐다 — 시각이 멈춘 게 꺼서인지
     ///                            에디터가 막혀서인지 밖에서 가를 수 있게. 켜면 바로 시각으로 덮인다.
+    ///                            둘째 줄부터 에디터 상태(play·play-by·compiling·importing·batch).
     ///
     /// 명령:
     ///   refresh              에셋 다시 읽기(코드를 고쳤으면 이걸로 컴파일시킨다).
@@ -40,7 +41,9 @@ namespace UnityTools.Editor
     ///   menu &lt;메뉴 경로&gt;      메뉴 항목 실행
     ///   call &lt;네임스페이스.타입.메서드&gt; [문자열]  메뉴에 없는 생성기·검사를 직접 호출(정적)
     ///   capture &lt;에셋 경로&gt;   프리팹을 렌더해 Logs/UIPreview에 저장
-    ///   play / stop          플레이 모드 시작·정지
+    ///   play / stop          플레이 모드 시작·정지. refresh·recompile 은 <b>브릿지 play 로 켠 플레이만</b>
+    ///                        스스로 끈다 — 사람이 켠 플레이면 "!! 실행 안 함"을 남기고 배치를 거둔다.
+    ///                        이미 사람이 플레이 중일 때의 play 도 같다. stop 은 적힌 대로 끈다.
     ///   wait &lt;초&gt;            다음 명령까지 기다린다(로딩·연출을 넘길 때)
     ///   shot &lt;이름&gt;          지금 게임 화면을 Logs/PlayCapture에 저장(플레이 모드 전용)
     ///
@@ -71,6 +74,9 @@ namespace UnityTools.Editor
         private const string IdKey = "UnityTools.AgentBridge.BatchId";
         private const string DeadlineKey = "UnityTools.AgentBridge.CompileDeadline";
         private const string ActiveKey = "UnityTools.AgentBridge.BatchActive";
+        private const string PlayOwnedKey = "UnityTools.AgentBridge.PlayOwned";
+        private const string PlayEnteredKey = "UnityTools.AgentBridge.PlayEntered";
+        private const string PlayRequestedKey = "UnityTools.AgentBridge.PlayRequested";
 
         // 컴파일을 부탁한 뒤 유니티가 실제로 시작하기까지 걸리는 시간을 봐 준다. 이만큼은 "안 걸렸다"고
         // 판정하지 않는다 — 시작 전에 판정하면 멀쩡히 도는 컴파일을 무동작으로 잘못 보고한다.
@@ -109,6 +115,9 @@ namespace UnityTools.Editor
         /// </summary>
         private static string _repeatLine;
 
+        /// <summary>이 줄에서 배치를 멈추고 남은 명령을 버린다 — 그 이유는 이미 보고서에 적었다.</summary>
+        private static bool _refused;
+
         /// <summary>추가 명령. 키는 명령 이름, 값은 (인자, 보고서) → 기다려야 하면 true.</summary>
         private static readonly Dictionary<string, Func<string, StringBuilder, bool>> Extra = new();
 
@@ -131,6 +140,15 @@ namespace UnityTools.Editor
             // 콘솔은 늘 듣고 있는다. 배치가 도는 동안만 실제로 적는다(<see cref="Collect"/>).
             // 도메인 리로드 뒤에도 여기가 다시 돌아 붙으므로 play 중의 로그가 안 빠진다.
             Application.logMessageReceived += Collect;
+
+            // 어떤 길로든 플레이가 끝나면 주인 표시도 끝난다(사람이 정지 버튼을 눌러도).
+            EditorApplication.playModeStateChanged += state =>
+            {
+                if (state == PlayModeStateChange.EnteredPlayMode) PlayEntered = true;
+
+                if (state == PlayModeStateChange.ExitingPlayMode || state == PlayModeStateChange.EnteredEditMode)
+                    PlayOwned = false;
+            };
         }
 
         /// <summary>
@@ -232,6 +250,35 @@ namespace UnityTools.Editor
             set => SessionState.SetBool(ActiveKey, value);
         }
 
+        /// <summary>
+        /// 지금 플레이를 브릿지의 <c>play</c> 명령이 켰는가. 아니면(사람이 재생 버튼을 눌렀거나 다른
+        /// 코드가 켰으면) 사람 것으로 보고 멈추지 않는다. 플레이가 끝나면 어떤 길로든 놓는다 — 사람이
+        /// 끄고 다시 켜면 사람 것이 된다. status.txt 의 <c>play-by</c> 와 같은 값이고, 전역 훅도 이걸
+        /// 읽어 판정하므로 둘의 기준이 같아야 한다.
+        ///
+        /// 예전에는 refresh 가 플레이 중이면 무조건 멈췄다 — 2026-10-14 DefenceR 에서 사용자가 직접
+        /// 하던 플레이를 플레이 시험도 아닌 배치(refresh+menu/call)가 두 번 끊었다.
+        /// </summary>
+        private static bool PlayOwned
+        {
+            get => SessionState.GetBool(PlayOwnedKey, false);
+            set => SessionState.SetBool(PlayOwnedKey, value);
+        }
+
+        /// <summary>브릿지 play 뒤 플레이에 실제로 들어갔는가.</summary>
+        private static bool PlayEntered
+        {
+            get => SessionState.GetBool(PlayEnteredKey, false);
+            set => SessionState.SetBool(PlayEnteredKey, value);
+        }
+
+        /// <summary>앞 구간이 play 를 걸고 끝났다 — 다음 구간 머리에서 들어갔는지 보고 내린다.</summary>
+        private static bool PlayRequested
+        {
+            get => SessionState.GetBool(PlayRequestedKey, false);
+            set => SessionState.SetBool(PlayRequestedKey, value);
+        }
+
         /// <summary>이 시각까지는 "컴파일이 안 걸렸다"고 판정하지 않는다.</summary>
         private static double CompileDeadline
         {
@@ -248,6 +295,8 @@ namespace UnityTools.Editor
             Enabled = !Enabled;
             Pending = string.Empty;
             _repeatLine = null;
+            PlayOwned = false;
+            PlayRequested = false;
 
             // 미뤄 둔 명령을 버리면 그 명령이 켜 둔 컴파일 감시와 콘솔 수집도 같이 버려야 한다.
             ClearWatch();
@@ -282,6 +331,12 @@ namespace UnityTools.Editor
             if (EditorApplication.timeSinceStartup < _nextPoll) return;
 
             _nextPoll = EditorApplication.timeSinceStartup + PollSeconds;
+
+            // play 가 플레이에 못 들어가면(컴파일 오류 등) 플레이 이벤트가 안 올 수 있어 주인 표시가 남는다 —
+            // 그러면 나중에 사람이 켠 플레이가 에이전트 것으로 찍혀 끊긴다(2026-10-14 리뷰). 이벤트를 믿지
+            // 않고, 안정된 편집 모드면 주인이 없는 것으로 한다.
+            if (PlayOwned && !EditorApplication.isPlaying && !EditorApplication.isPlayingOrWillChangePlaymode)
+                PlayOwned = false;
 
             // 깨어난 것 자체를 먼저 적는다. 아래 관문 뒤에 적으면 컴파일·임포트가 길어질 때
             // 갱신이 멈춰 밖에서는 브릿지가 죽은 것처럼 보인다 — 실제로 그렇게 헷갈렸다.
@@ -319,6 +374,7 @@ namespace UnityTools.Editor
                 File.Delete(RequestFile);
 
                 BatchId = ExtractId(commands);
+                PlayRequested = false;
 
                 // 이제부터 이 배치가 끝날 때까지 콘솔을 받는다. 앞 배치가 남긴 것은 버린다.
                 BatchActive = true;
@@ -346,6 +402,17 @@ namespace UnityTools.Editor
             if (append) ReportCompile(report);
             else WarnIfStale(report);
 
+            // 앞 구간이 play 로 끝났으면 실제로 들어갔었는지 본다. 못 들어가도(컴파일 오류 등) 유니티가
+            // 상태 변화 이벤트를 먼저 쏘기도 해서, 주인 표시가 지워진 것만으로는 못 가린다(SDK Host 실측).
+            if (append && PlayRequested)
+            {
+                PlayRequested = false;
+
+                if (!PlayEntered)
+                    report.AppendLine("!! play 가 플레이에 들어가지 못했습니다(컴파일 오류 등 — 위·아래 콘솔 참고). " +
+                                      "이어지는 명령은 편집 모드에서 돕니다.");
+            }
+
 
             try
             {
@@ -359,7 +426,21 @@ namespace UnityTools.Editor
 
                     report.AppendLine($"> {line}");
 
-                    if (!Execute(line, report)) continue;
+                    bool waits = Execute(line, report);
+
+                    if (_refused)
+                    {
+                        _refused = false;
+
+                        // 이어달리기 중이면 앞 구간은 이미 돌았다 — "다시 보내라"를 통째로 따르면 그게 두 번 돈다.
+                        var skipped = lines.Skip(i + 1).Select(l => l.Trim())
+                            .Where(l => l.Length > 0 && !l.StartsWith("#") && !l.StartsWith("id ")).ToArray();
+
+                        if (skipped.Length > 0) report.AppendLine("!! 건너뜀: " + string.Join(" / ", skipped));
+                        break;
+                    }
+
+                    if (!waits) continue;
 
                     // refresh·play는 도메인 리로드를, wait·shot은 시간을 기다린다. 남은 명령은 이어서 돌린다.
                     // 남은 게 없어도 빈 줄 하나를 남긴다 — 그래야 기다림이 끝난 뒤 '완료'가 찍힌다.
@@ -397,18 +478,7 @@ namespace UnityTools.Editor
             switch (command)
             {
                 case "refresh":
-                    // 플레이 중에는 유니티가 컴파일을 미룬다. 그 상태로 새로 읽히면 브릿지가 멈춘 것처럼 보인다
-                    // (실제로 여러 번 그랬다). 먼저 플레이를 끄고, 꺼진 다음에 이어서 읽는다.
-                    if (EditorApplication.isPlaying)
-                    {
-                        report.AppendLine("   플레이 중이라 먼저 정지합니다.");
-
-                        EditorApplication.isPlaying = false;
-
-                        _repeatLine = line;
-
-                        return true;
-                    }
+                    if (EditorApplication.isPlaying) return StopOwnPlay(line, report);
 
                     WatchCompile(RefreshGrace);
                     AssetDatabase.Refresh();
@@ -427,16 +497,7 @@ namespace UnityTools.Editor
                     // 유니티(Bee)는 Library/Bee/artifacts에 만들고 내용이 달라졌을 때만 저기로 복사하므로,
                     // 소스가 그대로면 다시 컴파일해도 시각이 안 변한다 — 2026-09-15에 그걸 근거로
                     // "이 명령이 무동작"이라는 틀린 결론을 냈다(실제로는 두 번 다 돌고 있었다).
-                    if (EditorApplication.isPlaying)
-                    {
-                        report.AppendLine("   플레이 중이라 먼저 정지합니다.");
-
-                        EditorApplication.isPlaying = false;
-
-                        _repeatLine = line;
-
-                        return true;
-                    }
+                    if (EditorApplication.isPlaying) return StopOwnPlay(line, report);
 
                     report.AppendLine("   전체를 다시 만듭니다 — 프로젝트에 따라 수 분 걸립니다.");
 
@@ -459,8 +520,18 @@ namespace UnityTools.Editor
                     return false;
 
                 case "play":
-                    if (EditorApplication.isPlaying) return false;
+                    if (EditorApplication.isPlaying)
+                    {
+                        // 남이 하던 플레이에 올라타면 이 배치의 명령이 그 안에서 돌고, 끝의 stop 이 그걸 끊는다.
+                        if (!PlayOwned)
+                            Refuse(report, "이미 플레이 중입니다(브릿지 play 로 켠 게 아님)");
 
+                        return false;
+                    }
+
+                    PlayOwned = true;
+                    PlayEntered = false;
+                    PlayRequested = true;
                     EditorApplication.isPlaying = true;
                     return true;
 
@@ -491,6 +562,40 @@ namespace UnityTools.Editor
                     report.AppendLine($"!! 모르는 명령: {command}");
                     return false;
             }
+        }
+
+        /// <summary>
+        /// 컴파일은 플레이 중에 미뤄지므로 플레이를 먼저 끄고 같은 줄을 다시 돈다 — 단 <b>브릿지가 켠
+        /// 플레이일 때만.</b> 사람이 하던 플레이면 끊지 않고 배치를 거둔다(<see cref="PlayOwned"/>).
+        /// </summary>
+        private static bool StopOwnPlay(string line, StringBuilder report)
+        {
+            if (!PlayOwned)
+            {
+                Refuse(report, "플레이 중입니다(브릿지 play 로 켠 게 아님)");
+                return false;
+            }
+
+            report.AppendLine("   브릿지가 켠 플레이라 먼저 정지합니다.");
+
+            EditorApplication.isPlaying = false;
+
+            _repeatLine = line;
+
+            return true;
+        }
+
+        /// <summary>
+        /// 배치를 여기서 멈추고 남은 명령을 버린다. 끝은 여느 배치처럼 <c># 완료</c>로 닫는다 — 기다리는
+        /// 쪽은 그걸 보고 멈추고, 실행 여부는 <c>!! 실행 안 함</c> 줄로 가린다.
+        /// </summary>
+        private static void Refuse(StringBuilder report, string reason)
+        {
+            // 읽는 쪽은 에이전트다 — "멈춰도 되면"으로 쓰면 스스로 괜찮다고 정하고 stop 을 붙여 다시 보낸다.
+            report.AppendLine($"!! 실행 안 함 — {reason}. 사람이 하던 플레이일 수 있어 멈추지 않았습니다. " +
+                              "사용자에게 물어 허락받은 뒤에만 배치 맨 앞에 stop 을 넣어 다시 보내세요.");
+
+            _refused = true;
         }
 
         /// <summary>
@@ -846,10 +951,35 @@ namespace UnityTools.Editor
             BatchActive = false;
         }
 
+        /// <summary>
+        /// 첫 줄은 시각(또는 <c>off 시각</c>) 그대로 둔다 — 기다리는 쪽(bridge-wait)이 수정 시각과
+        /// 첫 줄만 읽으므로 형식을 안 깬다. 그 아래에 에디터 상태를 <c>키: 값</c> 줄로 적어, 보내기 전에
+        /// 사람이 플레이 중인지 볼 수 있게 한다. 꺼져 있으면 상태 줄은 없다(갱신을 안 하니 낡은 값이 된다).
+        /// </summary>
         private static void WriteStatus(string prefix = "")
         {
             Directory.CreateDirectory(Root);
-            File.WriteAllText(StatusFile, prefix + Stamp(), Encoding.UTF8);
+
+            string text = prefix + Stamp();
+
+            if (prefix.Length == 0)
+            {
+                bool playing = EditorApplication.isPlaying;
+                bool changing = EditorApplication.isPlayingOrWillChangePlaymode != playing;
+
+                string play = changing ? (playing ? "exiting" : "entering")
+                    : playing ? (EditorApplication.isPaused ? "paused" : "playing")
+                    : "edit";
+
+                text += "\nplay: " + play +
+                        // 들어가는 중에도 주인을 적는다(사람이 막 누른 플레이를 밖에서 보게). 나오는 중은 끝나는 것이라 "-".
+                        "\nplay-by: " + (play == "edit" || play == "exiting" ? "-" : PlayOwned ? "agent" : "human") +
+                        "\ncompiling: " + (EditorApplication.isCompiling ? "yes" : "no") +
+                        "\nimporting: " + (EditorApplication.isUpdating ? "yes" : "no") +
+                        "\nbatch: " + (!BatchActive ? "idle" : ("running " + BatchId).TrimEnd());
+            }
+
+            File.WriteAllText(StatusFile, text, Encoding.UTF8);
         }
 
         /// <summary>넣는 쪽이 <c>id &lt;토큰&gt;</c>으로 이번 배치 이름을 정한다. 없으면 빈 문자열.</summary>
