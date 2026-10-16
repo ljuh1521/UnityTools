@@ -86,7 +86,9 @@ namespace UnityTools.UI
             // 순서를 반대로 하면 방금 넣은 disableSprite가 지워진다.
             // ⚠ 되돌리는 것도 그 base가 하므로 targetSprite가 비어 있는 버튼은 한 번 덮이면
             // 안 돌아온다 — disableSprite를 쓰려면 targetSprite도 채워야 한다.
-            if (!pressable && disableSprite != null && image != null)
+            bool grayedBySprite = !pressable && disableSprite != null && image != null;
+
+            if (grayedBySprite)
                 SetSprite(image, disableSprite, isEditor);
 
             // 버튼 안 비용 판(UIId.Of("Cost"))도 같이 죽인다 — 유니티 버튼의 색 전이는 targetGraphic
@@ -114,9 +116,45 @@ namespace UnityTools.UI
                 button.interactable = interactable;
                 button.enabled = interactable;
 
+                // 회색 그림으로 바꿨으면 유니티 버튼의 막힘 색(disabledColor)은 곱하지 않는다 — 그림이 이미
+                // 회색이라 두 번 어두워진다(DefenceR 실측 #bcbcbc → #939393, 2026-10-16). 회색 그림이 없는
+                // 버튼은 손대지 않는다 — 그 색이 유일한 막힘 표시다.
+                //
+                // 이미 칠해진 색을 걷어 내는 것만으로는 모자란다 — Button 이 꺼진 뒤에도 유니티가 다시 칠하는
+                // 길이 있다(부모 CanvasGroup.interactable 이 바뀔 때, SDK Host 실측 0.784). 그래서 실행 중에는
+                // 막혀 있는 동안 막힘 색 자체를 흰색으로 바꿔 둔다. 실행 중에만 하는 건 프리팹에 저장되지 않게
+                // 하려는 것이다(원래 색을 따로 기억할 곳이 없다). 편집 화면은 걷어 내기만으로 같은 모습이 된다.
+                if (Application.isPlaying) KeepDisabledTint(!grayedBySprite);
+
+                if (grayedBySprite && button.targetGraphic != null)
+                    button.targetGraphic.CrossFadeColor(Color.white, 0f, true, true);
+
                 // this도 같이 — pressable을 코드에서 isEditor:true로 바꿨을 때 저장되게 한다.
                 if (isEditor) EndEditor(button, this);
             }
+        }
+
+        private bool _disabledTintCleared;
+        private Color _savedDisabledColor;
+
+        private void KeepDisabledTint(bool keep)
+        {
+            if (keep == !_disabledTintCleared) return;
+
+            var colors = button.colors;
+
+            if (keep)
+            {
+                colors.disabledColor = _savedDisabledColor;
+            }
+            else
+            {
+                _savedDisabledColor = colors.disabledColor;
+                colors.disabledColor = Color.white;
+            }
+
+            _disabledTintCleared = !keep;
+            button.colors = colors;
         }
 
         // 비용 판 안쪽 그림을 찾는다. 에디터에서는 _elementMap을 안 쓴다 — Collect는 한 번 돌고
