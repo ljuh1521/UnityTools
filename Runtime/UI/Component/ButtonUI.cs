@@ -122,20 +122,28 @@ namespace UnityTools.UI
                 //
                 // 이미 칠해진 색을 걷어 내는 것만으로는 모자란다 — Button 이 꺼진 뒤에도 유니티가 다시 칠하는
                 // 길이 있다(부모 CanvasGroup.interactable 이 바뀔 때, SDK Host 실측 0.784). 그래서 실행 중에는
-                // 막혀 있는 동안 막힘 색 자체를 흰색으로 바꿔 둔다. 실행 중에만 하는 건 프리팹에 저장되지 않게
-                // 하려는 것이다(원래 색을 따로 기억할 곳이 없다). 편집 화면은 걷어 내기만으로 같은 모습이 된다.
-                if (Application.isPlaying) KeepDisabledTint(!grayedBySprite);
+                // 막혀 있는 동안 막힘 색 자체를 흰색으로 바꿔 둔다. 편집 경로(➤ Apply UI)에서는 안 한다 —
+                // 플레이 중이라도 원본 프리팹에 눌리면 흰색이 파일에 저장되고, 플레이를 끈 뒤에는 되돌릴
+                // 코드가 안 돈다(2026-10-16 리뷰). 편집 화면은 걷어 내기만으로 같은 모습이 된다.
+                //
+                // 덧칠은 targetGraphic 에 칠해지고 회색 그림은 image 에 들어간다 — 둘이 다르면 회색이 아닌
+                // 쪽의 막힘 표시를 지우게 되므로 같을 때만 한다(패키지 Button.prefab 은 같다).
+                bool clearTint = grayedBySprite && button.targetGraphic != null && button.targetGraphic == image.image;
 
-                if (grayedBySprite && button.targetGraphic != null)
-                    button.targetGraphic.CrossFadeColor(Color.white, 0f, true, true);
+                if (Application.isPlaying && !isEditor) KeepDisabledTint(!clearTint);
+
+                if (clearTint) button.targetGraphic.CrossFadeColor(Color.white, 0f, true, true);
 
                 // this도 같이 — pressable을 코드에서 isEditor:true로 바꿨을 때 저장되게 한다.
                 if (isEditor) EndEditor(button, this);
             }
         }
 
-        private bool _disabledTintCleared;
-        private Color _savedDisabledColor;
+        // 직렬화하는 건 실행 중 복제(Instantiate) 때문이다 — 막힌 버튼을 복제하면 흰 막힘 색은 따라가는데
+        // 기억이 안 따라가면 복제본은 영영 원래 색으로 못 돌아온다(2026-10-16 리뷰). 파일에 저장될 일은
+        // 없다 — 바꾸는 건 실행 중의 비편집 경로뿐이다.
+        [SerializeField, HideInInspector] private bool _disabledTintCleared;
+        [SerializeField, HideInInspector] private Color _savedDisabledColor;
 
         private void KeepDisabledTint(bool keep)
         {
@@ -154,7 +162,13 @@ namespace UnityTools.UI
             }
 
             _disabledTintCleared = !keep;
+
+            // 색 묶음을 넣으면 유니티가 지금 상태 색을 다시 칠한다 — Button 이 꺼져 있어도 칠한다. 막힘이
+            // 풀렸는데 꺼져 있는 버튼(buttonEnabled=false, 표시 전용)은 0.26 까지 덧칠이 없었으니 그대로 둔다.
             button.colors = colors;
+
+            if (keep && pressable && !button.enabled && button.targetGraphic != null)
+                button.targetGraphic.CrossFadeColor(Color.white, 0f, true, true);
         }
 
         // 비용 판 안쪽 그림을 찾는다. 에디터에서는 _elementMap을 안 쓴다 — Collect는 한 번 돌고
