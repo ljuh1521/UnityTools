@@ -50,7 +50,8 @@ namespace UnityTools.Editor
 
                 if (importer == null || !preset.CanBeAppliedTo(importer)) continue;
 
-                if (WouldLoseSetting(importer, out string reason))
+                if (WouldDropSprite(preset, importer, out string reason) ||
+                    WouldLoseSetting(importer, out reason))
                 {
                     skipped.Add($"{assetPath} ({reason})");
                     continue;
@@ -66,12 +67,58 @@ namespace UnityTools.Editor
 
             if (skipped.Count > 0)
             {
-                Debug.LogWarning($"[텍스처 프리셋] 개별 설정이 있어 건너뛴 텍스처 {skipped.Count}개입니다. " +
-                                 "프리셋을 씌우면 아래 설정이 사라지므로 손대지 않았습니다.\n  " +
+                Debug.LogWarning($"[텍스처 프리셋] 건너뛴 텍스처 {skipped.Count}개입니다. " +
+                                 "프리셋을 씌우면 괄호 안의 것이 사라지므로 손대지 않았습니다.\n  " +
                                  string.Join("\n  ", skipped));
             }
 
             return applied;
+        }
+
+        /// <summary>
+        /// 지금 스프라이트인 그림이 프리셋을 씌우면 스프라이트가 아니게 되거나 스프라이트 모드가 바뀌는지 본다.
+        /// 그러면 그 그림을 쓰는 곳(SpriteRenderer·Image)의 참조는 남은 채 스프라이트만 사라져 <b>오류 없이
+        /// 빈 칸이 된다</b> — DefenceR 에서 스파인 폴더에 섞인 낱장 그림 52장이 일반 텍스처로 덮여 불릿 그림
+        /// 50개가 두 달 반 동안 안 보였다(2026-08-10 ~ 10-26).
+        ///
+        /// 일부러 스프라이트를 일반 텍스처로 바꾸려던 것이어도 여기서는 건너뛴다 — 쓰는 곳이 남아 있는지
+        /// 이 도구는 모르므로, 그런 변경은 손으로 한다. 반대(일반 텍스처 → 스프라이트)는 잃는 게 없어 그대로 씌운다.
+        /// </summary>
+        public static bool WouldDropSprite(Preset preset, TextureImporter importer, out string reason)
+        {
+            reason = null;
+
+            if (importer.textureType != TextureImporterType.Sprite ||
+                importer.spriteImportMode == SpriteImportMode.None) return false;
+
+            // 프리셋에 안 적힌 값은 씌워도 안 바뀐다 — 지금 값으로 본다.
+            var type = (TextureImporterType)PresetInt(preset, "m_TextureType", (int)importer.textureType);
+            var mode = (SpriteImportMode)PresetInt(preset, "m_SpriteMode", (int)importer.spriteImportMode);
+
+            if (type != TextureImporterType.Sprite)
+            {
+                reason = $"스프라이트가 사라짐 — 프리셋은 {type}";
+                return true;
+            }
+
+            if (mode != importer.spriteImportMode)
+            {
+                reason = $"스프라이트 모드가 바뀜 — {importer.spriteImportMode} → {mode}";
+                return true;
+            }
+
+            return false;
+        }
+
+        private static int PresetInt(Preset preset, string propertyPath, int fallback)
+        {
+            foreach (var modification in preset.PropertyModifications)
+            {
+                if (modification.propertyPath == propertyPath && int.TryParse(modification.value, out int value))
+                    return value;
+            }
+
+            return fallback;
         }
 
         /// <summary>
@@ -81,6 +128,10 @@ namespace UnityTools.Editor
         public static bool WouldLoseSetting(TextureImporter importer, out string reason)
         {
             reason = null;
+
+            // 스프라이트가 아니면 잃을 조각·테두리·피벗이 없다. 이걸 안 보면 스프라이트 모드 값만 Multiple 로
+            // 남은 일반 텍스처가 영영 건너뛰어진다 — 유니티 6000.3 에서 새로 들인 일반 텍스처가 그랬다(SDK Host 실측).
+            if (importer.textureType != TextureImporterType.Sprite) return false;
 
             if (importer.spriteImportMode == SpriteImportMode.Multiple)
             {
