@@ -156,6 +156,10 @@ PrefabInstance:
       propertyPath: m_PixelsPerUnitMultiplier
       value: 0.3
       objectReference: {fileID: 0}
+    - target: {fileID: 5409171247531518721, guid: a156febada93cd446a0636e3100ba03e, type: 3}
+      propertyPath: m_RaycastTarget
+      value: 0
+      objectReference: {fileID: 0}
     - target: {fileID: 5809079148202932687, guid: a156febada93cd446a0636e3100ba03e, type: 3}
       propertyPath: m_Name
       value: Root
