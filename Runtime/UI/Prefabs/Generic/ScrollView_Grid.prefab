@@ -72,7 +72,7 @@ MonoBehaviour:
   m_GameObject: {fileID: 1677909844547501187}
   m_Enabled: 1
   m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 1aa08ab6e0800fa44ae55d278d1423e3, type: 3}
+  m_Script: {fileID: 11500000, guid: ec02be6da869259ad5946928eb836f22, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
   m_Content: {fileID: 2437079584829145041}
@@ -104,6 +104,7 @@ GameObject:
   - component: {fileID: 5751442066533692779}
   - component: {fileID: 229583293495987744}
   - component: {fileID: 4140736988128702962}
+  - component: {fileID: 7305812946610274561}
   m_Layer: 5
   m_Name: Viewport
   m_TagString: Untagged
@@ -244,3 +245,19 @@ MonoBehaviour:
   elementId: 13
   rectTransform: {fileID: 2437079584829145041}
   updateValues: 
+--- !u!114 &7305812946610274561
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 6098955378654066708}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 7c9d198d98454b635a7c2ec17f437aef, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  m_Material: {fileID: 0}
+  m_Color: {r: 1, g: 1, b: 1, a: 1}
+  m_RaycastTarget: 1
+  m_RaycastPadding: {x: 0, y: 0, z: 0, w: 0}
