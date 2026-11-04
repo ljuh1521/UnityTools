@@ -601,6 +601,10 @@ PrefabInstance:
       value: Background
       objectReference: {fileID: 0}
     - target: {fileID: 2004560414556117525, guid: e94307e7605ba3041a975a4508d10f89, type: 3}
+      propertyPath: m_RaycastTarget
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 2004560414556117525, guid: e94307e7605ba3041a975a4508d10f89, type: 3}
       propertyPath: m_Sprite
       value: 
       objectReference: {fileID: 21300000, guid: f4669fc36608eea4ea25cca1548b88b3, type: 3}
