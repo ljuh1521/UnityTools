@@ -7,7 +7,9 @@ using System.Reflection;
 using System.Text;
 using UnityEditor;
 using UnityEditor.Compilation;
+using UnityEditor.SceneManagement;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 
 // UnityEditor에도 PackageInfo가 따로 있어 그냥 쓰면 모호하다.
 using PackageInfo = UnityEditor.PackageManager.PackageInfo;
@@ -31,7 +33,8 @@ namespace UnityTools.Editor
     ///   Logs/Agent/status.txt    살아 있는지 알리는 시각(켜져 있을 때만 갱신).
     ///                            메뉴로 끄면 "off 시각"으로 바뀐다 — 시각이 멈춘 게 꺼서인지
     ///                            에디터가 막혀서인지 밖에서 가를 수 있게. 켜면 바로 시각으로 덮인다.
-    ///                            둘째 줄부터 에디터 상태(play·play-by·compiling·importing·batch).
+    ///                            둘째 줄부터 에디터 상태(play·play-by·compiling·importing·batch·열린 씬·프리팹).
+    ///   Logs/Agent/blocked.txt   에디터가 멈춘 동안 그 순간 떠 있는 창(<see cref="StallWatch"/>).
     ///
     /// 명령:
     ///   refresh              에셋 다시 읽기(코드를 고쳤으면 이걸로 컴파일시킨다).
@@ -46,6 +49,8 @@ namespace UnityTools.Editor
     ///                        이미 사람이 플레이 중일 때의 play 도 같다. stop 은 적힌 대로 끈다.
     ///   wait &lt;초&gt;            다음 명령까지 기다린다(로딩·연출을 넘길 때)
     ///   shot &lt;이름&gt;          지금 게임 화면을 Logs/PlayCapture에 저장(플레이 모드 전용)
+    ///   keep-scenes          이 배치가 바꾼 열린 씬 배치를 그대로 둔다. 없으면 끝날 때 받았을 때대로 되돌린다
+    ///                        (<see cref="RestoreScenes"/>).
     ///
     /// 프로젝트·선택 패키지가 <see cref="Register"/>로 명령을 더 붙일 수 있다.
     /// </summary>
@@ -77,6 +82,9 @@ namespace UnityTools.Editor
         private const string PlayOwnedKey = "UnityTools.AgentBridge.PlayOwned";
         private const string PlayEnteredKey = "UnityTools.AgentBridge.PlayEntered";
         private const string PlayRequestedKey = "UnityTools.AgentBridge.PlayRequested";
+        private const string ScenesAtStartKey = "UnityTools.AgentBridge.ScenesAtStart";
+        private const string ScenesMovedKey = "UnityTools.AgentBridge.ScenesMoved";
+        private const string KeepScenesKey = "UnityTools.AgentBridge.KeepScenes";
 
         // 컴파일을 부탁한 뒤 유니티가 실제로 시작하기까지 걸리는 시간을 봐 준다. 이만큼은 "안 걸렸다"고
         // 판정하지 않는다 — 시작 전에 판정하면 멀쩡히 도는 컴파일을 무동작으로 잘못 보고한다.
@@ -279,6 +287,30 @@ namespace UnityTools.Editor
             set => SessionState.SetBool(PlayRequestedKey, value);
         }
 
+        /// <summary>배치를 받았을 때 열려 있던 씬 배치(<see cref="SceneLayout"/>). 플레이 중에 받았으면 빈 값.</summary>
+        private static string ScenesAtStart
+        {
+            get => SessionState.GetString(ScenesAtStartKey, string.Empty);
+            set => SessionState.SetString(ScenesAtStartKey, value ?? string.Empty);
+        }
+
+        /// <summary>
+        /// 이 배치의 명령이 씬 배치를 바꿨는가. 명령 하나를 도는 동안 바뀐 것만 센다 — 기다리는 사이에
+        /// 사람이 바꾼 것까지 되돌리면 안 된다.
+        /// </summary>
+        private static bool ScenesMoved
+        {
+            get => SessionState.GetBool(ScenesMovedKey, false);
+            set => SessionState.SetBool(ScenesMovedKey, value);
+        }
+
+        /// <summary>배치가 <c>keep-scenes</c>로 바꾼 씬 배치를 남겨 달라고 했다(사람에게 씬을 열어 보여 줄 때).</summary>
+        private static bool KeepScenes
+        {
+            get => SessionState.GetBool(KeepScenesKey, false);
+            set => SessionState.SetBool(KeepScenesKey, value);
+        }
+
         /// <summary>이 시각까지는 "컴파일이 안 걸렸다"고 판정하지 않는다.</summary>
         private static double CompileDeadline
         {
@@ -327,7 +359,12 @@ namespace UnityTools.Editor
 
         private static void Poll()
         {
-            if (!Enabled) return;
+            bool enabled = Enabled;
+
+            // 이 줄은 관문(0.5초) 앞에 둔다 — 깨어 있는 매 순간을 감시가 알아야 멈춤을 늦지 않게 가른다.
+            StallWatch.Beat(enabled);
+
+            if (!enabled) return;
             if (EditorApplication.timeSinceStartup < _nextPoll) return;
 
             _nextPoll = EditorApplication.timeSinceStartup + PollSeconds;
@@ -375,6 +412,10 @@ namespace UnityTools.Editor
 
                 BatchId = ExtractId(commands);
                 PlayRequested = false;
+
+                ScenesAtStart = SceneLayout();
+                ScenesMoved = false;
+                KeepScenes = false;
 
                 // 이제부터 이 배치가 끝날 때까지 콘솔을 받는다. 앞 배치가 남긴 것은 버린다.
                 BatchActive = true;
@@ -426,7 +467,17 @@ namespace UnityTools.Editor
 
                     report.AppendLine($"> {line}");
 
-                    bool waits = Execute(line, report);
+                    string before = SceneLayout();
+                    bool waits;
+
+                    // 명령이 던져도 그 전에 씬을 옮겼을 수 있다.
+                    try { waits = Execute(line, report); }
+                    finally
+                    {
+                        string after = SceneLayout();
+
+                        if (before.Length > 0 && after.Length > 0 && before != after) ScenesMoved = true;
+                    }
 
                     if (_refused)
                     {
@@ -465,7 +516,121 @@ namespace UnityTools.Editor
                 report.AppendLine("!! " + e);
             }
 
+            RestoreScenes(report);
             Flush(report, "완료", append);
+        }
+
+        /// <summary>
+        /// 열린 씬 배치를 한 문자열로. 씬마다 <c>경로 탭 내림/올림 탭 활성</c> 한 줄, 마지막 줄은 프리팹 편집 화면.
+        /// 플레이 중에는 씬 목록이 게임 것이라 빈 값을 돌려준다.
+        /// </summary>
+        private static string SceneLayout()
+        {
+            if (EditorApplication.isPlayingOrWillChangePlaymode) return string.Empty;
+
+            var text = new StringBuilder();
+
+            foreach (SceneSetup setup in EditorSceneManager.GetSceneManagerSetup())
+                text.Append(setup.path).Append('\t').Append(setup.isLoaded ? '1' : '0')
+                    .Append('\t').Append(setup.isActive ? '1' : '0').Append('\n');
+
+            PrefabStage stage = PrefabStageUtility.GetCurrentPrefabStage();
+
+            return text.Append("prefab\t").Append(stage == null ? string.Empty : stage.assetPath).ToString();
+        }
+
+        /// <summary>
+        /// 배치가 열린 씬을 바꾼 채 끝나면 받았을 때의 배치로 되돌린다. 작업할 씬으로 옮겨 놓고 끝나면 그 씬이 열린
+        /// 채로 남아, 나중에 그 파일을 밖에서 고칠 때 유니티가 다시 불러올지 묻는 창을 띄우고 사람이 누를 때까지
+        /// 브릿지가 멈춘다(2026-11-09 DefenceR). 저장 안 한 변경이 있으면 되돌리면 그게 사라지므로 알리기만 한다.
+        /// </summary>
+        private static void RestoreScenes(StringBuilder report)
+        {
+            string start = ScenesAtStart;
+            bool moved = ScenesMoved;
+            bool keep = KeepScenes;
+
+            ScenesAtStart = string.Empty;
+            ScenesMoved = false;
+            KeepScenes = false;
+
+            if (!moved || start.Length == 0) return;
+
+            string now = SceneLayout();
+
+            if (now.Length == 0 || now == start) return;
+
+            string change = $"받았을 때 {DescribeLayout(start)} → 지금 {DescribeLayout(now)}";
+
+            if (keep)
+            {
+                report.AppendLine("   keep-scenes — 이 배치가 바꾼 씬 배치를 그대로 둡니다: " + change);
+                return;
+            }
+
+            string[] lines = start.Split('\n');
+            string startStage = lines[lines.Length - 1].Substring("prefab\t".Length);
+            PrefabStage stage = PrefabStageUtility.GetCurrentPrefabStage();
+            string nowStage = stage == null ? string.Empty : stage.assetPath;
+
+            var blockers = new List<string>();
+
+            for (int i = 0; i < SceneManager.sceneCount; i++)
+            {
+                Scene scene = SceneManager.GetSceneAt(i);
+
+                if (scene.isDirty) blockers.Add("저장 안 한 씬 " + (scene.path.Length == 0 ? "(untitled)" : scene.path));
+            }
+
+            if (stage != null && stage.scene.isDirty) blockers.Add("저장 안 한 프리팹 " + nowStage);
+            if (lines.Take(lines.Length - 1).Any(l => l.StartsWith("\t"))) blockers.Add("받았을 때 저장한 적 없는 새 씬이 있었음");
+            if (startStage.Length > 0 && startStage != nowStage) blockers.Add("받았을 때 다른 프리팹을 편집 중이었음");
+
+            if (blockers.Count > 0)
+            {
+                report.AppendLine($"!! 이 배치가 열린 씬을 바꿨는데 되돌리지 못했습니다({string.Join(", ", blockers)}). {change}");
+                report.AppendLine("   작업할 씬은 SceneEdit.Run 으로 곁에 열어 고치면 배치가 그대로 남습니다.");
+                return;
+            }
+
+            try
+            {
+                if (startStage.Length == 0 && stage != null) StageUtility.GoToMainStage();
+
+                EditorSceneManager.RestoreSceneManagerSetup(lines.Take(lines.Length - 1).Select(l =>
+                {
+                    string[] parts = l.Split('\t');
+                    return new SceneSetup { path = parts[0], isLoaded = parts[1] == "1", isActive = parts[2] == "1" };
+                }).ToArray());
+
+                report.AppendLine($"!! 이 배치가 열린 씬을 바꿔서 받았을 때대로 되돌렸습니다. {change}");
+                report.AppendLine("   작업할 씬은 SceneEdit.Run 으로 곁에 열어 고칩니다. 사람에게 보여 주려고 연 것이면 배치에 keep-scenes 를 넣습니다.");
+            }
+            catch (Exception e)
+            {
+                report.AppendLine($"!! 이 배치가 열린 씬을 바꿨고 되돌리다 실패했습니다: {e.Message}. {change}");
+            }
+        }
+
+        private static string DescribeLayout(string layout)
+        {
+            var parts = new List<string>();
+
+            foreach (string line in layout.Split('\n'))
+            {
+                string[] cells = line.Split('\t');
+
+                if (cells[0] == "prefab")
+                {
+                    if (cells[1].Length > 0) parts.Add("프리팹 " + cells[1]);
+                    continue;
+                }
+
+                string name = cells[0].Length == 0 ? "(untitled)" : cells[0];
+                parts.Add(name + (cells[1] == "0" ? "(내림)" : string.Empty));
+            }
+
+            return "[" + string.Join(" · ", parts) + "]";
         }
 
         /// <summary>명령 하나를 실행한다. 컴파일을 기다려야 하면 true.</summary>
@@ -508,6 +673,10 @@ namespace UnityTools.Editor
 
                 case "id":
                     // 배치를 읽기 전에 이미 뽑아 뒀다. 여기서는 넘긴다.
+                    return false;
+
+                case "keep-scenes":
+                    KeepScenes = true;
                     return false;
 
                 case "menu":
@@ -976,10 +1145,42 @@ namespace UnityTools.Editor
                         "\nplay-by: " + (play == "edit" || play == "exiting" ? "-" : PlayOwned ? "agent" : "human") +
                         "\ncompiling: " + (EditorApplication.isCompiling ? "yes" : "no") +
                         "\nimporting: " + (EditorApplication.isUpdating ? "yes" : "no") +
-                        "\nbatch: " + (!BatchActive ? "idle" : ("running " + BatchId).TrimEnd());
+                        "\nbatch: " + (!BatchActive ? "idle" : ("running " + BatchId).TrimEnd()) +
+                        OpenAssets();
             }
 
             File.WriteAllText(StatusFile, text, Encoding.UTF8);
+        }
+
+        /// <summary>
+        /// 지금 에디터에 열린 씬과 프리팹 편집 화면. 열린 파일을 밖에서 고치면 다음 refresh 에 "다시 불러올까"
+        /// 확인창이 떠 사람이 누를 때까지 브릿지가 멈춘다(2026-11-09 DefenceR) — 고치기 전에 밖에서 보게 한다.
+        /// 상태가 앞이고 경로가 뒤다(경로에 빈칸이 있어도 첫 낱말만 떼면 된다).
+        /// </summary>
+        private static string OpenAssets()
+        {
+            var text = new StringBuilder();
+
+            text.Append("\nscenes: ").Append(SceneManager.sceneCount);
+
+            for (int i = 0; i < SceneManager.sceneCount; i++)
+            {
+                Scene scene = SceneManager.GetSceneAt(i);
+
+                string state = !scene.isLoaded ? "unloaded" : scene.isDirty ? "dirty" : "clean";
+                string path = string.IsNullOrEmpty(scene.path) ? "(untitled)" : scene.path;
+
+                text.Append("\nscene: ").Append(state).Append(' ').Append(path);
+            }
+
+            // 지금 보고 있는 편집 화면 하나만 적는다. 프리팹 안의 프리팹으로 들어가면 바깥 것도 열린 채로 남는데,
+            // 그 목록은 유니티가 공개하지 않는다.
+            PrefabStage stage = PrefabStageUtility.GetCurrentPrefabStage();
+
+            text.Append("\nprefab-stage: ").Append(stage == null ? "-"
+                : (stage.scene.isDirty ? "dirty " : "clean ") + stage.assetPath);
+
+            return text.ToString();
         }
 
         /// <summary>넣는 쪽이 <c>id &lt;토큰&gt;</c>으로 이번 배치 이름을 정한다. 없으면 빈 문자열.</summary>

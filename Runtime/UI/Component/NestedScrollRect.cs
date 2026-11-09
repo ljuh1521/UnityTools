@@ -26,28 +26,25 @@ namespace UnityTools.UI
 
         public override void OnBeginDrag(PointerEventData eventData)
         {
-            if (IsCrossDrag(eventData) && transform.parent != null)
-                _outer = ExecuteEvents.GetEventHandler<IDragHandler>(transform.parent.gameObject);
-
-            if (_outer == null)
+            if (_outer == null && IsCrossDrag(eventData) && transform.parent != null)
             {
-                base.OnBeginDrag(eventData);
-                return;
+                _outer = ExecuteEvents.GetEventHandler<IDragHandler>(transform.parent.gameObject);
+                _outerEvent = eventData;
             }
 
-            _outerEvent = eventData;
-            ExecuteEvents.Execute(_outer, eventData, ExecuteEvents.beginDragHandler);
+            if (IsOuterDrag(eventData)) ExecuteEvents.Execute(_outer, eventData, ExecuteEvents.beginDragHandler);
+            else base.OnBeginDrag(eventData);
         }
 
         public override void OnDrag(PointerEventData eventData)
         {
-            if (_outer != null) ExecuteEvents.Execute(_outer, eventData, ExecuteEvents.dragHandler);
+            if (IsOuterDrag(eventData)) ExecuteEvents.Execute(_outer, eventData, ExecuteEvents.dragHandler);
             else base.OnDrag(eventData);
         }
 
         public override void OnEndDrag(PointerEventData eventData)
         {
-            if (_outer != null) EndOuterDrag(eventData);
+            if (IsOuterDrag(eventData)) EndOuterDrag(eventData);
             else base.OnEndDrag(eventData);
         }
 
@@ -58,6 +55,10 @@ namespace UnityTools.UI
 
             base.OnDisable();
         }
+
+        // 끌기 상태는 목록에 하나뿐이라 다른 손가락까지 넘기면 바깥이 두 손가락의 위치 차만큼 튄다.
+        private bool IsOuterDrag(PointerEventData eventData) =>
+            _outer != null && _outerEvent.pointerId == eventData.pointerId;
 
         // 프레임 하나의 이동량은 순간값이라 흔들리므로 누른 자리부터의 이동으로 판단한다. 같으면 자기 방향이다.
         private bool IsCrossDrag(PointerEventData eventData)
