@@ -1156,6 +1156,8 @@ namespace UnityTools.Editor
         /// 지금 에디터에 열린 씬과 프리팹 편집 화면. 열린 파일을 밖에서 고치면 다음 refresh 에 "다시 불러올까"
         /// 확인창이 떠 사람이 누를 때까지 브릿지가 멈춘다(2026-11-09 DefenceR) — 고치기 전에 밖에서 보게 한다.
         /// 상태가 앞이고 경로가 뒤다(경로에 빈칸이 있어도 첫 낱말만 떼면 된다).
+        /// 전역 훅(~/.claude/hooks/unity-editor-guard.mjs)이 이 줄 이름과 순서를 읽는다 — 바꾸면 훅이 조용히
+        /// 안 걸리므로 그쪽도 같이 고친다.
         /// </summary>
         private static string OpenAssets()
         {
