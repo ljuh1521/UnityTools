@@ -83,8 +83,12 @@ namespace UnityTools.Editor
         private const string PlayEnteredKey = "UnityTools.AgentBridge.PlayEntered";
         private const string PlayRequestedKey = "UnityTools.AgentBridge.PlayRequested";
         private const string ScenesAtStartKey = "UnityTools.AgentBridge.ScenesAtStart";
-        private const string ScenesMovedKey = "UnityTools.AgentBridge.ScenesMoved";
+        private const string ScenesMovedKey = "UnityTools.AgentBridge.ScenesMovedTo";
+        private const string ScenesMovedInPlayKey = "UnityTools.AgentBridge.ScenesMovedInPlay";
+        private const string EditScenesKey = "UnityTools.AgentBridge.EditScenes";
         private const string KeepScenesKey = "UnityTools.AgentBridge.KeepScenes";
+        private const string PlayStartSetKey = "UnityTools.AgentBridge.PlayStartSet";
+        private const string PlayStartBeforeKey = "UnityTools.AgentBridge.PlayStartBefore";
 
         // 컴파일을 부탁한 뒤 유니티가 실제로 시작하기까지 걸리는 시간을 봐 준다. 이만큼은 "안 걸렸다"고
         // 판정하지 않는다 — 시작 전에 판정하면 멀쩡히 도는 컴파일을 무동작으로 잘못 보고한다.
@@ -149,13 +153,23 @@ namespace UnityTools.Editor
             // 도메인 리로드 뒤에도 여기가 다시 돌아 붙으므로 play 중의 로그가 안 빠진다.
             Application.logMessageReceived += Collect;
 
+            // 리로드 직후 첫 Poll 전에 창이 떠도 감시가 돌게 한다.
+            StallWatch.Beat(Enabled);
+
             // 어떤 길로든 플레이가 끝나면 주인 표시도 끝난다(사람이 정지 버튼을 눌러도).
             EditorApplication.playModeStateChanged += state =>
             {
                 if (state == PlayModeStateChange.EnteredPlayMode) PlayEntered = true;
 
+                // 플레이 중의 씬 목록은 게임이 올린 것이라, 그대로 적으면 사람이 열어 둔 씬이 목록에서 빠져 밖에서 고쳐도
+                // 되는 것처럼 보인다. 플레이가 끝나면 유니티가 그 씬을 되살리므로 들어가기 직전 목록을 적는다.
+                if (state == PlayModeStateChange.ExitingEditMode) SessionState.SetString(EditScenesKey, OpenAssets());
+                if (state == PlayModeStateChange.EnteredEditMode) SessionState.EraseString(EditScenesKey);
+
                 if (state == PlayModeStateChange.ExitingPlayMode || state == PlayModeStateChange.EnteredEditMode)
                     PlayOwned = false;
+
+                if (state == PlayModeStateChange.EnteredEditMode) RestorePlayStart();
             };
         }
 
@@ -295,13 +309,20 @@ namespace UnityTools.Editor
         }
 
         /// <summary>
-        /// 이 배치의 명령이 씬 배치를 바꿨는가. 명령 하나를 도는 동안 바뀐 것만 센다 — 기다리는 사이에
-        /// 사람이 바꾼 것까지 되돌리면 안 된다.
+        /// 이 배치의 명령이 마지막으로 씬 배치를 바꾼 뒤의 배치. 바꾼 적 없으면 빈 값. 명령 하나를 도는 동안
+        /// 바뀐 것만 센다 — 기다리는 사이에 사람이 바꾼 것까지 되돌리면 안 된다.
         /// </summary>
-        private static bool ScenesMoved
+        private static string ScenesMovedTo
         {
-            get => SessionState.GetBool(ScenesMovedKey, false);
-            set => SessionState.SetBool(ScenesMovedKey, value);
+            get => SessionState.GetString(ScenesMovedKey, string.Empty);
+            set => SessionState.SetString(ScenesMovedKey, value ?? string.Empty);
+        }
+
+        /// <summary>플레이를 낀 명령이라 씬을 바꿨는지 비교하지 못했다.</summary>
+        private static bool ScenesMovedInPlay
+        {
+            get => SessionState.GetBool(ScenesMovedInPlayKey, false);
+            set => SessionState.SetBool(ScenesMovedInPlayKey, value);
         }
 
         /// <summary>배치가 <c>keep-scenes</c>로 바꾼 씬 배치를 남겨 달라고 했다(사람에게 씬을 열어 보여 줄 때).</summary>
@@ -309,6 +330,30 @@ namespace UnityTools.Editor
         {
             get => SessionState.GetBool(KeepScenesKey, false);
             set => SessionState.SetBool(KeepScenesKey, value);
+        }
+
+        /// <summary><c>play &lt;씬&gt;</c>이 플레이 시작 씬을 바꿔 두었다 — 플레이가 끝나면 <see cref="PlayStartBefore"/>로 돌린다.</summary>
+        private static bool PlayStartSet
+        {
+            get => SessionState.GetBool(PlayStartSetKey, false);
+            set => SessionState.SetBool(PlayStartSetKey, value);
+        }
+
+        /// <summary>바꾸기 전 플레이 시작 씬 경로. 빈 값이면 따로 정해 둔 게 없었다(열린 씬에서 시작).</summary>
+        private static string PlayStartBefore
+        {
+            get => SessionState.GetString(PlayStartBeforeKey, string.Empty);
+            set => SessionState.SetString(PlayStartBeforeKey, value ?? string.Empty);
+        }
+
+        private static void RestorePlayStart()
+        {
+            if (!PlayStartSet) return;
+
+            PlayStartSet = false;
+            EditorSceneManager.playModeStartScene = PlayStartBefore.Length == 0
+                ? null
+                : AssetDatabase.LoadAssetAtPath<SceneAsset>(PlayStartBefore);
         }
 
         /// <summary>이 시각까지는 "컴파일이 안 걸렸다"고 판정하지 않는다.</summary>
@@ -372,8 +417,11 @@ namespace UnityTools.Editor
             // play 가 플레이에 못 들어가면(컴파일 오류 등) 플레이 이벤트가 안 올 수 있어 주인 표시가 남는다 —
             // 그러면 나중에 사람이 켠 플레이가 에이전트 것으로 찍혀 끊긴다(2026-10-14 리뷰). 이벤트를 믿지
             // 않고, 안정된 편집 모드면 주인이 없는 것으로 한다.
-            if (PlayOwned && !EditorApplication.isPlaying && !EditorApplication.isPlayingOrWillChangePlaymode)
+            if (!EditorApplication.isPlaying && !EditorApplication.isPlayingOrWillChangePlaymode)
+            {
                 PlayOwned = false;
+                RestorePlayStart();
+            }
 
             // 깨어난 것 자체를 먼저 적는다. 아래 관문 뒤에 적으면 컴파일·임포트가 길어질 때
             // 갱신이 멈춰 밖에서는 브릿지가 죽은 것처럼 보인다 — 실제로 그렇게 헷갈렸다.
@@ -414,8 +462,13 @@ namespace UnityTools.Editor
                 PlayRequested = false;
 
                 ScenesAtStart = SceneLayout();
-                ScenesMoved = false;
+                ScenesMovedTo = string.Empty;
+                ScenesMovedInPlay = false;
                 KeepScenes = false;
+
+                // 앞 배치가 예외로 끝났으면 남아 있을 수 있다 — 이 배치에 엉뚱한 명령이 끼어든다.
+                _repeatLine = null;
+                _refused = false;
 
                 // 이제부터 이 배치가 끝날 때까지 콘솔을 받는다. 앞 배치가 남긴 것은 버린다.
                 BatchActive = true;
@@ -472,12 +525,7 @@ namespace UnityTools.Editor
 
                     // 명령이 던져도 그 전에 씬을 옮겼을 수 있다.
                     try { waits = Execute(line, report); }
-                    finally
-                    {
-                        string after = SceneLayout();
-
-                        if (before.Length > 0 && after.Length > 0 && before != after) ScenesMoved = true;
-                    }
+                    finally { NoteSceneMove(before, line); }
 
                     if (_refused)
                     {
@@ -516,8 +564,40 @@ namespace UnityTools.Editor
                 report.AppendLine("!! " + e);
             }
 
-            RestoreScenes(report);
+            // 씬 되돌리기는 덧붙인 안전장치다 — 여기서 난 예외로 배치의 끝 표시가 빠지면 안 된다.
+            try { RestoreScenes(report); }
+            catch (Exception e) { report.AppendLine("!! 열린 씬을 확인하다 실패했습니다: " + e.Message); }
+
             Flush(report, "완료", append);
+        }
+
+        /// <summary>
+        /// 명령 하나가 씬 배치를 바꿨는지 적는다. 바뀐 뒤의 배치를 남겨 두는 건, 끝날 때 그와 다르면 그 뒤에
+        /// (wait 사이에) 사람이 바꾼 것이라 되돌리면 안 되기 때문이다.
+        /// </summary>
+        private static void NoteSceneMove(string before, string line)
+        {
+            try
+            {
+                string after = SceneLayout();
+
+                if (before.Length > 0 && after.Length > 0)
+                {
+                    if (before != after) ScenesMovedTo = after;
+                    return;
+                }
+
+                // play·stop 은 원래 씬을 바꾸고(유니티가 끝나면 되돌린다) 그 사이는 비교할 수 없다. 그 밖의 명령이
+                // 플레이를 끼고 돌았으면 씬을 바꿨는지 모른다는 것만 남긴다.
+                string command = line.Split(' ')[0];
+
+                if (command != "play" && command != "stop" && command != "wait" && command != "shot" && before != after)
+                    ScenesMovedInPlay = true;
+            }
+            catch (Exception)
+            {
+                ScenesMovedInPlay = true;
+            }
         }
 
         /// <summary>
@@ -526,7 +606,9 @@ namespace UnityTools.Editor
         /// </summary>
         private static string SceneLayout()
         {
-            if (EditorApplication.isPlayingOrWillChangePlaymode) return string.Empty;
+            // stop 직후에는 isPlayingOrWillChangePlaymode 가 먼저 false 가 되고 isPlaying 은 아직 true 다 — 그때 아래가
+            // 던져서 배치의 남은 명령이 버려졌다(2026-11-09 DefenceR). 둘 다 본다.
+            if (EditorApplication.isPlaying || EditorApplication.isPlayingOrWillChangePlaymode) return string.Empty;
 
             var text = new StringBuilder();
 
@@ -547,24 +629,45 @@ namespace UnityTools.Editor
         private static void RestoreScenes(StringBuilder report)
         {
             string start = ScenesAtStart;
-            bool moved = ScenesMoved;
+            string movedTo = ScenesMovedTo;
+            bool movedInPlay = ScenesMovedInPlay;
             bool keep = KeepScenes;
 
             ScenesAtStart = string.Empty;
-            ScenesMoved = false;
+            ScenesMovedTo = string.Empty;
+            ScenesMovedInPlay = false;
             KeepScenes = false;
 
-            if (!moved || start.Length == 0) return;
+            if (keep && (movedTo.Length > 0 || movedInPlay))
+            {
+                report.AppendLine("   keep-scenes — 이 배치가 바꾼 씬 배치를 그대로 둡니다.");
+                return;
+            }
+
+            if (movedInPlay)
+                report.AppendLine("!! 플레이를 낀 명령이 씬을 바꿨는지 알 수 없어 열린 씬을 되돌리지 않았습니다. " +
+                                  "다른 씬으로 플레이하려면 play <씬 경로> 를 씁니다.");
+
+            if (movedTo.Length == 0) return;
 
             string now = SceneLayout();
 
-            if (now.Length == 0 || now == start) return;
+            if (start.Length == 0 || now.Length == 0)
+            {
+                report.AppendLine("!! 이 배치가 열린 씬을 바꿨는데 " + (start.Length == 0 ? "받았을 때" : "끝날 때") +
+                                  " 플레이 중이라 되돌리지 못했습니다. 지금 " +
+                                  (now.Length == 0 ? "(플레이 중)" : DescribeLayout(now)));
+                return;
+            }
+
+            if (now == start) return;
 
             string change = $"받았을 때 {DescribeLayout(start)} → 지금 {DescribeLayout(now)}";
 
-            if (keep)
+            // 배치가 마지막으로 바꾼 뒤에 또 바뀌었으면 사람이 wait 사이에 옮긴 것이다. 그걸 되돌리면 사람 화면을 뺏는다.
+            if (now != movedTo)
             {
-                report.AppendLine("   keep-scenes — 이 배치가 바꾼 씬 배치를 그대로 둡니다: " + change);
+                report.AppendLine($"!! 이 배치가 열린 씬을 바꿨고 그 뒤에 다른 손이 또 바꿔서 되돌리지 않았습니다. {change}");
                 return;
             }
 
@@ -597,7 +700,7 @@ namespace UnityTools.Editor
             {
                 if (startStage.Length == 0 && stage != null) StageUtility.GoToMainStage();
 
-                EditorSceneManager.RestoreSceneManagerSetup(lines.Take(lines.Length - 1).Select(l =>
+                RestoreLayout(lines.Take(lines.Length - 1).Select(l =>
                 {
                     string[] parts = l.Split('\t');
                     return new SceneSetup { path = parts[0], isLoaded = parts[1] == "1", isActive = parts[2] == "1" };
@@ -610,6 +713,49 @@ namespace UnityTools.Editor
             {
                 report.AppendLine($"!! 이 배치가 열린 씬을 바꿨고 되돌리다 실패했습니다: {e.Message}. {change}");
             }
+        }
+
+        /// <summary>
+        /// 달라진 씬만 열고 닫아 맞춘다. RestoreSceneManagerSetup 은 그대로인 씬까지 다시 불러올 수 있어 쓰지 않는다 —
+        /// 그러면 사람이 손대지 않은 씬의 선택·되돌리기 기록이 날아간다.
+        /// </summary>
+        private static void RestoreLayout(SceneSetup[] wanted)
+        {
+            // 먼저 열어야 닫을 때 열린 씬이 하나도 없는 순간이 안 생긴다.
+            foreach (SceneSetup setup in wanted)
+            {
+                Scene scene = SceneManager.GetSceneByPath(setup.path);
+
+                if (!scene.IsValid())
+                    EditorSceneManager.OpenScene(setup.path,
+                        setup.isLoaded ? OpenSceneMode.Additive : OpenSceneMode.AdditiveWithoutLoading);
+                else if (setup.isLoaded && !scene.isLoaded)
+                    EditorSceneManager.OpenScene(setup.path, OpenSceneMode.Additive);
+            }
+
+            SceneSetup active = wanted.FirstOrDefault(s => s.isActive);
+
+            if (active != null) SceneManager.SetActiveScene(SceneManager.GetSceneByPath(active.path));
+
+            var keep = new HashSet<string>(wanted.Select(s => s.path));
+
+            for (int i = SceneManager.sceneCount - 1; i >= 0; i--)
+            {
+                Scene scene = SceneManager.GetSceneAt(i);
+
+                if (!keep.Contains(scene.path)) EditorSceneManager.CloseScene(scene, true);
+            }
+
+            foreach (SceneSetup setup in wanted)
+            {
+                Scene scene = SceneManager.GetSceneByPath(setup.path);
+
+                if (!setup.isLoaded && scene.isLoaded) EditorSceneManager.CloseScene(scene, false);
+            }
+
+            for (int i = 1; i < wanted.Length; i++)
+                EditorSceneManager.MoveSceneAfter(SceneManager.GetSceneByPath(wanted[i].path),
+                    SceneManager.GetSceneByPath(wanted[i - 1].path));
         }
 
         private static string DescribeLayout(string layout)
@@ -696,6 +842,27 @@ namespace UnityTools.Editor
                             Refuse(report, "이미 플레이 중입니다(브릿지 play 로 켠 게 아님)");
 
                         return false;
+                    }
+
+                    // 씬을 대면 열린 씬은 그대로 두고 그 씬으로 시작한다. 플레이가 끝나면 원래 시작 씬으로 돌린다.
+                    if (argument.Length > 0)
+                    {
+                        var start = AssetDatabase.LoadAssetAtPath<SceneAsset>(argument);
+
+                        if (start == null)
+                        {
+                            Refuse(report, "씬을 찾지 못했습니다: " + argument);
+                            return false;
+                        }
+
+                        if (!PlayStartSet)
+                        {
+                            SceneAsset previous = EditorSceneManager.playModeStartScene;
+                            PlayStartBefore = previous == null ? string.Empty : AssetDatabase.GetAssetPath(previous);
+                            PlayStartSet = true;
+                        }
+
+                        EditorSceneManager.playModeStartScene = start;
                     }
 
                     PlayOwned = true;
@@ -1146,7 +1313,7 @@ namespace UnityTools.Editor
                         "\ncompiling: " + (EditorApplication.isCompiling ? "yes" : "no") +
                         "\nimporting: " + (EditorApplication.isUpdating ? "yes" : "no") +
                         "\nbatch: " + (!BatchActive ? "idle" : ("running " + BatchId).TrimEnd()) +
-                        OpenAssets();
+                        EditorAssets(play);
             }
 
             File.WriteAllText(StatusFile, text, Encoding.UTF8);
@@ -1159,6 +1326,13 @@ namespace UnityTools.Editor
         /// 전역 훅(~/.claude/hooks/unity-editor-guard.mjs)이 이 줄 이름과 순서를 읽는다 — 바꾸면 훅이 조용히
         /// 안 걸리므로 그쪽도 같이 고친다.
         /// </summary>
+        private static string EditorAssets(string play)
+        {
+            string saved = SessionState.GetString(EditScenesKey, string.Empty);
+
+            return play != "edit" && saved.Length > 0 ? saved : OpenAssets();
+        }
+
         private static string OpenAssets()
         {
             var text = new StringBuilder();

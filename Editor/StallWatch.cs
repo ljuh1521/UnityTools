@@ -29,7 +29,10 @@ namespace UnityTools.Editor
         private static readonly ManualResetEvent Stopping = new(false);
         private static readonly Thread Watcher;
 
-        private static long _beatTicks = DateTime.UtcNow.Ticks;
+        // 멈춘 길이는 시계 보정·절전 복귀에 흔들리지 않는 Stopwatch 로 재고, 사람이 읽을 시각만 따로 둔다.
+        private static long _beatStamp = Stopwatch.GetTimestamp();
+        private static long _beatTicks = DateTime.Now.Ticks;
+        private static readonly uint Self = (uint)Process.GetCurrentProcess().Id;
         private static volatile bool _watching;
         private static volatile bool _written;
 
@@ -49,7 +52,8 @@ namespace UnityTools.Editor
         /// <summary>에디터가 깨어날 때마다 부른다. 브릿지가 꺼져 있으면 감시도 쉰다.</summary>
         public static void Beat(bool enabled)
         {
-            Interlocked.Exchange(ref _beatTicks, DateTime.UtcNow.Ticks);
+            Interlocked.Exchange(ref _beatStamp, Stopwatch.GetTimestamp());
+            Interlocked.Exchange(ref _beatTicks, DateTime.Now.Ticks);
             _watching = enabled;
 
             if (!_written) return;
@@ -73,14 +77,14 @@ namespace UnityTools.Editor
             {
                 if (!_watching) continue;
 
-                var since = new DateTime(Interlocked.Read(ref _beatTicks), DateTimeKind.Utc);
+                double stalled = (double)(Stopwatch.GetTimestamp() - Interlocked.Read(ref _beatStamp)) / Stopwatch.Frequency;
 
-                if ((DateTime.UtcNow - since).TotalSeconds < StallSeconds) continue;
+                if (stalled < StallSeconds) continue;
 
                 // 이 스레드에서 난 예외는 아무도 받지 않는다. 한 번 못 적어도 다음 바퀴에 다시 적는다.
                 try
                 {
-                    Write(since.ToLocalTime());
+                    Write(new DateTime(Interlocked.Read(ref _beatTicks)));
                     _written = true;
                 }
                 catch (Exception)
@@ -128,7 +132,6 @@ namespace UnityTools.Editor
         /// 보내는 쪽(GetWindowText)은 창 주인인 멈춘 에디터가 답할 때까지 이 스레드도 같이 멈춘다.</summary>
         private static List<(string Class, string Title, bool Enabled)> Windows()
         {
-            uint self = (uint)Process.GetCurrentProcess().Id;
             var found = new List<(string, string, bool)>();
             var buffer = new StringBuilder(512);
 
@@ -136,7 +139,7 @@ namespace UnityTools.Editor
             {
                 GetWindowThreadProcessId(handle, out uint owner);
 
-                if (owner != self || !IsWindowVisible(handle)) return true;
+                if (owner != Self || !IsWindowVisible(handle)) return true;
 
                 buffer.Clear();
                 GetClassName(handle, buffer, buffer.Capacity);
