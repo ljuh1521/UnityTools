@@ -145,6 +145,9 @@ namespace UnityTools.Editor
 
         static AgentBridge()
         {
+            // 에셋 임포트 보조 프로세스도 같은 프로젝트 폴더에서 이 코드를 불러온다 — 명령 파일·상태 파일은 본 에디터만 만진다.
+            if (AssetDatabase.IsAssetImportWorkerProcess()) return;
+
             EditorApplication.update += Poll;
             CompilationPipeline.assemblyCompilationFinished += OnAssemblyCompiled;
             CompilationPipeline.compilationStarted += OnCompilationStarted;

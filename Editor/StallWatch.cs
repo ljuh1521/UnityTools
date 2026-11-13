@@ -34,12 +34,12 @@ namespace UnityTools.Editor
         private static long _beatTicks = DateTime.Now.Ticks;
         private static readonly uint Self = (uint)Process.GetCurrentProcess().Id;
         private static volatile bool _watching;
-        private static volatile bool _written;
 
         static StallWatch()
         {
-            // 지난 실행이 멈춘 채 꺼졌으면 그 기록이 남아 있다.
-            _written = File.Exists(BlockedFile);
+            // 에셋 임포트 보조 프로세스도 같은 프로젝트 폴더에서 이 코드를 불러온다. 거기엔 창도 하트비트도 없어서, 감시가
+            // 돌면 몇 시간씩 "멈춤 · modal: no"를 적어 진짜 확인창 기록을 덮었다(2026-11-09 SDK Host).
+            if (AssetDatabase.IsAssetImportWorkerProcess()) return;
 
             // 도메인을 내리기 전에 세운다 — 옛 코드의 스레드가 남아 돌면 리로드가 그걸 기다리거나 둘이 겹친다.
             AssemblyReloadEvents.beforeAssemblyReload += Stop;
@@ -55,14 +55,6 @@ namespace UnityTools.Editor
             Interlocked.Exchange(ref _beatStamp, Stopwatch.GetTimestamp());
             Interlocked.Exchange(ref _beatTicks, DateTime.Now.Ticks);
             _watching = enabled;
-
-            if (!_written) return;
-
-            _written = false;
-
-            try { File.Delete(BlockedFile); }
-            catch (IOException) { _written = true; }
-            catch (UnauthorizedAccessException) { _written = true; }
         }
 
         private static void Stop()
@@ -75,21 +67,18 @@ namespace UnityTools.Editor
         {
             while (!Stopping.WaitOne(1000))
             {
-                if (!_watching) continue;
-
                 double stalled = (double)(Stopwatch.GetTimestamp() - Interlocked.Read(ref _beatStamp)) / Stopwatch.Frequency;
 
-                if (stalled < StallSeconds) continue;
-
-                // 이 스레드에서 난 예외는 아무도 받지 않는다. 한 번 못 적어도 다음 바퀴에 다시 적는다.
+                // 이 스레드에서 난 예외는 아무도 받지 않는다. 한 번 못 해도 다음 바퀴에 다시 한다.
                 try
                 {
-                    Write(new DateTime(Interlocked.Read(ref _beatTicks)));
-                    _written = true;
+                    // 지우기도 여기서 한다 — 지난 실행이 멈춘 채 꺼졌을 때 남은 기록도 치운다.
+                    if (_watching && stalled >= StallSeconds) Write(new DateTime(Interlocked.Read(ref _beatTicks)));
+                    else if (File.Exists(BlockedFile)) File.Delete(BlockedFile);
                 }
                 catch (Exception)
                 {
-                    // 적는 중 에디터가 깨어나 지웠거나 파일이 잠긴 것이다.
+                    // 파일이 잠긴 것이다.
                 }
             }
         }

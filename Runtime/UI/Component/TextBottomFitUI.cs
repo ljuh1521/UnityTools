@@ -72,7 +72,16 @@ namespace UnityTools.UI
 
         /// 실제로 그려지는 글자의 맨 아래. 정점은 SDF 여백까지 품고 있어 쓸 수 없으므로,
         /// 글자마다 폰트에 적힌 잉크 상자(윗변 위치 − 높이)를 보고 가장 낮은 것을 고른다.
+        ///
+        /// 글자·숫자만 잰다. 쉼표처럼 아래로 걸치는 게 제 모양인 부호까지 재면, 같은 칸에서 "1,100"의 숫자가
+        /// "140"보다 그 부호 깊이만큼 떠 보인다(2026-11-13 DefenceR, 수성돋움 크기 20에서 4.56). 부호는 바닥
+        /// 아래로 조금 걸친다. 글자·숫자가 하나도 없으면 전부 잰다.
         private static bool TryGetInkBottom(TMP_TextInfo info, out float inkBottom)
+        {
+            return TryGetInkBottom(info, true, out inkBottom) || TryGetInkBottom(info, false, out inkBottom);
+        }
+
+        private static bool TryGetInkBottom(TMP_TextInfo info, bool lettersOnly, out float inkBottom)
         {
             inkBottom = float.MaxValue;
 
@@ -80,6 +89,7 @@ namespace UnityTools.UI
             {
                 var character = info.characterInfo[i];
                 if (!character.isVisible || character.textElement == null) continue;
+                if (lettersOnly && !char.IsLetterOrDigit(character.character)) continue;
 
                 var metrics = character.textElement.glyph.metrics;
                 float bottom = character.baseLine + (metrics.horizontalBearingY - metrics.height) * character.scale;
