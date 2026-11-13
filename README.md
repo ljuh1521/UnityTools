@@ -355,6 +355,20 @@ GC 끊김이 되기 때문이다.
 - 게임 시간을 멈춘 팝업 위에서도 돌도록 **멈추지 않는 시간**으로 센다. 가만히 있는 버튼은 아무것도
   돌리지 않는다(누를 때만 루틴이 뜬다).
 
+**모든 버튼의 눌림을 한곳에서 받는다** — 클릭음처럼 버튼마다 달면 빠뜨리는 일에 쓴다. 패키지는 소리를
+내지 않고 어느 버튼인지만 알린다. 버튼마다 다른 소리·소리 없음은 프로젝트가 받은 버튼을 보고 정한다.
+
+```csharp
+ButtonUI.Clicked += button => Sound.Play("click");            // 눌린 버튼
+ButtonUI.ClickedWhileLocked += button => Sound.Play("locked"); // 못 누르게 해 둔 버튼을 눌렀다 뗌
+```
+
+- `Clicked`는 버튼 동작보다 **먼저** 온다. 동작이 팝업을 닫아 버튼이 사라져도 이미 지나갔다.
+- `ClickedWhileLocked`는 `SetPressable(false)`인 버튼에서만 온다. 표시 전용으로 꺼 둔 버튼(`buttonEnabled`)과
+  부모가 잠깐 막아 둔 버튼(화면 전환 중 등)은 오지 않는다. 끌기로 끝난 누름도 오지 않는다.
+- 받는 쪽이 오류를 내도 콘솔에 남기고 다른 받는 쪽과 버튼 동작은 그대로 나간다.
+- `ToggleUI`에는 아직 없다.
+
 ### 스크롤 — `NestedScrollRect` · `RaycastArea`
 
 스크롤 부품 프리팹(`ScrollView_*`)에 기본으로 들어 있다. 프리팹 없이 유니티 `ScrollRect`를 바로 쓰는

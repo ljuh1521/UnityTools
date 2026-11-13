@@ -11,8 +11,16 @@ namespace UnityTools.UI
     // ButtonOutlineShadowUI와 API가 중복돼 있던 걸 ButtonUI 하나로 합침). 프리팹에 "Outline"·
     // "Shadow" 자식이 없는 기존 버튼은 OutlineUI/OutlineShadowUI 쪽 가드 덕분에 전혀 영향 없다 —
     // 그 자식들을 나중에 추가하기만 하면 이 버튼도 테두리·그림자를 쓸 수 있다.
-    public class ButtonUI : OutlineShadowUI, IPointerDownHandler, IPointerUpHandler, IPointerExitHandler
+    public class ButtonUI : OutlineShadowUI, IPointerDownHandler, IPointerUpHandler, IPointerExitHandler, IPointerClickHandler
     {
+        /// <summary>어느 버튼이든 눌리면 그 버튼의 동작보다 먼저 온다 — 클릭음처럼 모든 버튼에 거는 일에 쓴다.
+        /// 동작이 버튼을 닫거나 지워도 이 신호는 이미 지나갔다.</summary>
+        public static event Action<ButtonUI> Clicked;
+
+        /// <summary><see cref="SetPressable"/>로 못 누르게 해 둔 버튼을 눌렀다 뗐을 때 온다 — 잠금 소리 같은 데 쓴다.
+        /// 표시 전용으로 꺼 둔 버튼(<see cref="buttonEnabled"/>)이나 부모가 잠깐 막아 둔 버튼은 오지 않는다.</summary>
+        public static event Action<ButtonUI> ClickedWhileLocked;
+
         [Header("UI")]
         public Button button;
         public ImageUI image;
@@ -540,7 +548,28 @@ namespace UnityTools.UI
 
         public void OnClick()
         {
+            Raise(Clicked);
+
             onClick?.Invoke();
+        }
+
+        // 눌림이 허락된 버튼은 유니티 Button 이 OnClick 으로 보낸다. 여기서는 잠긴 버튼만 본다 —
+        // 끌기로 끝난 누름은 유니티가 클릭으로 치지 않아 여기 오지 않는다.
+        public void OnPointerClick(PointerEventData eventData)
+        {
+            if (buttonEnabled && !pressable) Raise(ClickedWhileLocked);
+        }
+
+        // 받는 쪽(소리 등) 하나가 던져도 다른 받는 쪽과 버튼 동작은 나가야 한다.
+        private void Raise(Action<ButtonUI> signal)
+        {
+            if (signal == null) return;
+
+            foreach (Action<ButtonUI> receiver in signal.GetInvocationList())
+            {
+                try { receiver(this); }
+                catch (Exception e) { Debug.LogException(e, this); }
+            }
         }
 
         // ── 인스펙터 클릭 연결용 자리 ─────────────────────────────────────────────
